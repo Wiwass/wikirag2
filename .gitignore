@@ -1,0 +1,5 @@
+__pycache__/
+venv/
+private/
+knowledge_bases/
+*.sqlite
