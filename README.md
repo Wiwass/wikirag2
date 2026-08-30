@@ -69,17 +69,18 @@ wikirag2/
 │   ├── llm.md                 # provider-agnostic client, cost metering, key pooling
 │   ├── evaluation.md          # benchmark harness, metrics, regression workflow
 │   └── decisions.md           # running log of design decisions (ADR-lite)
-├── wikirag/                   # (future) the package
-│   ├── cli.py                 # typer/argparse CLI: kb management, ingest, query
-│   ├── config.py              # KB registry, S/R profiles, model config
-│   ├── storage/               # sqlite store, vector index, vault exporter
-│   ├── llm/                   # LLMClient protocol, gemini impl, cost meter
-│   ├── extraction/            # pdf → structured text (ports v1 pdf_extractor ideas)
-│   ├── ingestion/             # stage runner + pluggable stage implementations
-│   ├── synthesis/             # keyword notes, overview, links (S1–S3)
-│   ├── retrieval/             # lexical, dense, fusion, rerank, assembly (R0–R2)
-│   ├── agent/                 # R3 agentic navigation loop
-│   └── eval/                  # benchmark harness (ported from v1)
+├── wikirag/                   # the package (skeleton: docstrings only, implemented module by module)
+│   ├── cli.py                 # CLI: kb management, ingest, query/chat, export, costs, eval
+│   ├── config.py              # KB registry, KnowledgeBase handle, S/R enums
+│   ├── answer.py              # grounded answering shared by query/chat/eval; depth dispatch
+│   ├── storage/               # store.py (sqlite), vectors.py, vault.py (export)
+│   ├── llm/                   # client.py (protocol), gemini.py, meter.py, embeddings.py
+│   ├── extraction/            # pdf.py: PDF → structured sections (no LLM)
+│   ├── ingestion/             # runner.py (jobs), chunking.py, enrich.py (open research)
+│   ├── synthesis/             # summaries.py (S1), notes.py (S2), atlas.py (S3)
+│   ├── retrieval/             # search.py, rerank.py, router.py, graph.py, assembly.py
+│   ├── agent/                 # loop.py: R3 agentic navigation
+│   └── eval/                  # harness.py: benchmark grid + blind judge
 └── tests/
 ```
 
