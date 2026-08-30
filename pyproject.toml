@@ -1,0 +1,11 @@
+[project]
+name = "wikirag"
+version = "0.0.1"
+description = "Personal knowledge engine: retrieval index + readable wiki vault, both on sliders."
+requires-python = ">=3.11"
+# Dependencies are added as modules get implemented (see docs/ for planned stack:
+# sqlite (stdlib), sentence-transformers, rapidfuzz->removed, google-genai, pymupdf, ...)
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
