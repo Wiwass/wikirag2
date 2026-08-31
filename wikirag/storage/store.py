@@ -103,7 +103,9 @@ CREATE TABLE sections (
     parent_id TEXT REFERENCES sections(id) ON DELETE CASCADE,
     ordinal   INTEGER NOT NULL,
     title     TEXT,
-    level     INTEGER NOT NULL DEFAULT 0
+    level     INTEGER NOT NULL DEFAULT 0,
+    page_start INTEGER,
+    page_end   INTEGER
 );
 CREATE INDEX sections_doc ON sections(doc_id, ordinal);
 
@@ -391,8 +393,9 @@ class Store:
         """Insert a document's section tree. Parents must precede children."""
         with self.transaction() as db:
             db.executemany(
-                "INSERT INTO sections (id, doc_id, parent_id, ordinal, title, level)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sections"
+                " (id, doc_id, parent_id, ordinal, title, level, page_start, page_end)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         s["id"],
@@ -401,6 +404,8 @@ class Store:
                         s["ordinal"],
                         s.get("title"),
                         s.get("level", 0),
+                        s.get("page_start"),
+                        s.get("page_end"),
                     )
                     for s in sections
                 ],

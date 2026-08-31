@@ -330,6 +330,11 @@ def section_rows(doc_id: str, doc: ExtractedDocLike) -> list[dict[str, Any]]:
                 "ordinal": ordinal,
                 "title": section.title,
                 "level": section.level,
+                # Optional on the input (SectionLike does not require them);
+                # the store keeps them nullable. Pages make chunk->page
+                # provenance (citations, page-level eval) a join.
+                "page_start": getattr(section, "page_start", None),
+                "page_end": getattr(section, "page_end", None),
             }
         )
     return rows
