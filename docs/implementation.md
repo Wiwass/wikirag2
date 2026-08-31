@@ -84,3 +84,7 @@ Ingest a small real corpus sample, run `wikirag query` end-to-end, port enough o
 2. On completion: integrate, resolve conflicts yourself (do not respawn for trivial fixes), run `pytest`, run the wave's smoke test.
 3. Commit, push, report to the human: what was built, test results, open issues, whether a checkpoint is reached.
 4. At checkpoints: stop and wait for the human.
+
+## V1 assets (reuse, don't rewrite)
+
+The v1 repository is readable and holds assets to port, not reinvent: the benchmark harness (`benchmark/`), the gold dataset (`benchmarks/arsmagicaV2/dataset.json`, corpus unchanged so it carries over), the prompt library (`prompts.json`), the hardened Gemini client (`GeminiPipeline.py`) and the PDF extraction heuristics (`pdf_extractor.py`). Source PDFs for test ingests are in v1's local `knowledge_bases/*/arc/`, which is in neither repository.
