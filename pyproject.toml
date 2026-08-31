@@ -7,6 +7,10 @@ requires-python = ">=3.11"
 # sqlite (stdlib), sentence-transformers, rapidfuzz->removed, google-genai, pymupdf, ...)
 dependencies = [
     "numpy",
+    "pymupdf",
+    "pdfplumber",
+    "sentence-transformers",
+    "google-genai",
 ]
 
 [project.optional-dependencies]

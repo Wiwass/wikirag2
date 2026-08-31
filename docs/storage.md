@@ -65,7 +65,7 @@ consolidation_queue(keyword_id, reason, queued_at)            -- lazy-note reque
 
 Open question (deferred): whether vault edits made by the user in Obsidian should flow *back* into the store (two-way sync). Default answer for now: no — the vault is read-only output; user knowledge enters through ingestion.
 
-## Open questions
+## Resolved questions
 
-- **Vector index**: plain npz matrices loaded in RAM were fine at v1 scale (~tens of thousands of vectors) and keep dependencies at zero; `sqlite-vec` would keep everything in one file and scale further. Decide at skeleton time with a micro-benchmark.
-- **Embedding model**: modern, long-context (≥8k), ideally multilingual (Italian queries over English corpora). Candidates: bge-m3, gte-modernbert-base, EmbeddingGemma. Decide with the retrieval floor benchmark.
+- **Vector index**: npz matrices + numpy brute force (decision D13, micro-benchmarked; sqlite-vec deferred until ~200k+ vectors).
+- **Embedding model**: BAAI/bge-m3 + BAAI/bge-reranker-v2-m3 (decision D14; validated against the retrieval floor benchmark at Checkpoint A).
