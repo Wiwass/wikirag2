@@ -45,6 +45,9 @@ PRICES: dict[str, tuple[float, float]] = {
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.5-flash-lite": (0.10, 0.40),
     "gemini-2.5-pro": (1.25, 10.00),
+    # 3.5 family (verified 2026-08-31; 2.5 is retired for new API users).
+    "gemini-3.5-flash": (1.50, 9.00),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
 }
 """Price table for cost_estimate. A model absent from it costs 0.0 (see
 estimate_cost): an unknown or local model must never fake a cost, and a

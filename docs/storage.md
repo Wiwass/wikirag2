@@ -18,7 +18,7 @@ knowledge_bases/<name>/
 ```sql
 -- Sources
 documents(id, filename, title, ingested_at, status, meta_json)
-sections(id, doc_id, parent_id, ordinal, title, level)        -- extracted structure
+sections(id, doc_id, parent_id, ordinal, title, level, page_start, page_end)  -- extracted structure
 
 -- Canonical content
 chunks(id, doc_id, section_id, ordinal, text, token_count)
