@@ -2,6 +2,20 @@
 
 Running record of design decisions. Newest first. Format: date, decision, why, alternatives set aside. Confidence annotations (0-100) are honest priors to be checked against the benchmark, not promises.
 
+## 2026-08-31 — Implementation, Wave 0
+
+**D13. Vector index: npz + numpy brute force; sqlite-vec deferred.** Micro-benchmark (the open question in docs/storage.md), random vectors at dim 1024, float32, single `index.npz` per KB, 12-core WSL2 box, median of 10 top-20 searches after warm-up:
+
+| vectors | search median | search p90 | filtered (`owner_kind`) | save | load | file / RAM |
+|---|---|---|---|---|---|---|
+| 10k | 2.3 ms | 7.1 ms | 1.5 ms | 0.5 s | 0.06 s | 41 MB |
+| 50k | 2.5 ms | 5.3 ms | 2.3 ms | 0.9 s | 0.2 s | 207 MB |
+| 200k | 10.8 ms | 17.0 ms | 9.5 ms | 3-6 s | 1.5-5 s | 830 MB |
+
+Brute force is a single BLAS matrix-vector product: latency is ~1-2 orders of magnitude below the reranker and the answering LLM at every scale a personal KB reaches (v1: tens of thousands of vectors), so an ANN or sqlite-vec index would buy nothing measurable while adding a dependency outside the closed set. The binding constraint is *memory*, not latency: the matrix is resident (~4 KB/vector at dim 1024), which is comfortable at 50k and noticeable at 200k. Revisit `sqlite-vec` (or memory-mapping the matrix) when a KB passes ~200k vectors or when index load time enters query latency. Reproduce with `WIKIRAG_BENCH=1 pytest tests/test_vectors.py -k benchmark -s`.
+
+Persistence: mutations are in-memory, `save()` writes temp file + fsync + `os.replace`, so a crash leaves either the previous complete index or the new one — never a torn file. Unsaved mutations are lost by design; the store is the source of truth and `stale_owners()` makes re-embedding them incremental. An index opened with a different model or dim discards the stored vectors (different embedding space, derived data) and reports every owner as stale.
+
 ## 2026-08-31 — Memory model and retrieval redesign
 
 Motivated by the graphs-vs-agents discussion (Cursor-style "no graphs for coding" positions, v1's own benchmark, GraphRAG-Bench): explicit LLM-built graphs compete with two free association mechanisms (parametric knowledge, embedding neighborhoods) and only pay off as *navigable structure*, not as flattened context.
@@ -34,7 +48,6 @@ Motivated by the graphs-vs-agents discussion (Cursor-style "no graphs for coding
 
 ## Deferred / open
 
-- Vector index: npz-in-RAM vs sqlite-vec (micro-benchmark at skeleton time).
 - Embedding model: long-context, multilingual candidates (bge-m3, gte-modernbert, EmbeddingGemma).
 - Two-way vault sync (user edits flowing back into the store): out of scope for now.
 - Auto-routing R by classifier vs manual depth flag as default UX.

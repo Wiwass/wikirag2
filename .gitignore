@@ -3,3 +3,5 @@ venv/
 private/
 knowledge_bases/
 *.sqlite
+.pytest_cache/
+*.egg-info/
