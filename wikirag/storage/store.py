@@ -40,7 +40,7 @@ Documents and structure:
   add_sections(doc_id, sections), get_sections(doc_id)
   add_chunks(chunks), get_chunks(chunk_ids), get_document_chunks(doc_id)
   section_window(chunk_id), neighbors(chunk_id, radius=1)
-  add_xrefs(xrefs), xrefs_from(chunk_id)
+  add_xrefs(xrefs), xrefs_from(chunk_id), delete_xrefs(doc_id) -> int
   forget_document(doc_id) -> bool
 
 Concept layer:
@@ -504,6 +504,20 @@ class Store:
                     for x in xrefs
                 ],
             )
+
+    def delete_xrefs(self, doc_id: str) -> int:
+        """Drop every xref originating in a document's chunks; returns the count.
+
+        Re-running the xref stage must replace, not append: the extractor is
+        deterministic, so a second run would otherwise duplicate every row.
+        """
+        with self.transaction() as db:
+            cur = db.execute(
+                "DELETE FROM xrefs WHERE from_chunk_id IN"
+                " (SELECT id FROM chunks WHERE doc_id = ?)",
+                (doc_id,),
+            )
+            return int(cur.rowcount)
 
     def xrefs_from(self, chunk_id: str) -> list[dict[str, Any]]:
         return self._rows(

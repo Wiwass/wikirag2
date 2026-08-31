@@ -250,6 +250,22 @@ def test_xrefs_roundtrip(store: Store) -> None:
     assert len(refs) == 1 and refs[0]["to_section_id"] == "doc1:s2"
 
 
+def test_delete_xrefs_is_per_document(store: Store) -> None:
+    seed_document(store)
+    seed_document(store, "doc2")
+    store.add_xrefs(
+        [
+            {"from_chunk_id": "doc1:c0", "raw_ref": "see Chapter 2"},
+            {"from_chunk_id": "doc1:c1", "raw_ref": "cf. p.83"},
+            {"from_chunk_id": "doc2:c0", "raw_ref": "see Chapter 2"},
+        ]
+    )
+    assert store.delete_xrefs("doc1") == 2
+    assert store.xrefs_from("doc1:c0") == [] and store.xrefs_from("doc1:c1") == []
+    assert len(store.xrefs_from("doc2:c0")) == 1
+    assert store.delete_xrefs("doc1") == 0  # already empty
+
+
 # ------------------------------------------------------------------- forget
 
 

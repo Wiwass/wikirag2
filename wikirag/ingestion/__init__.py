@@ -20,4 +20,155 @@ Modules:
     chunking  deterministic structure-aware chunker
     xrefs     native cross-reference extraction (pattern-based, no LLM)
     enrich    OPEN research area: tagging + contextualization methods
+
+This package also holds the default stage implementations (extract_stage,
+chunk_stage, xrefs_stage, index_stage) and `register_default_stages()`,
+which wires them into the runner's registry. Wiring is explicit — the
+runner's registry stays empty at import time so it remains testable with
+fakes; the CLI (and any integration entry point) calls
+`register_default_stages()` once at startup.
+
+Stage idempotency: extract and chunk treat existing rows for the document
+as proof of completion (both are deterministic, so re-running would write
+identical rows); xrefs replaces its rows transactionally; index skips
+chunks whose content hash already matches. A job interrupted between the
+store commit and the jobs-table update is therefore safe to re-run.
 """
+
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from wikirag.config import KnowledgeBase
+
+# kb_config keys the stages honor (with their defaults).
+EMBEDDING_MODEL_KEY = "embedding_model"
+CHUNK_MAX_TOKENS_KEY = "chunk_max_tokens"
+
+_EMBED_BATCH = 64
+
+
+def _source_pdf(kb: "KnowledgeBase", doc_id: str) -> Path:
+    document = kb.store.get_document(doc_id)
+    if document is None:
+        raise RuntimeError(f"unknown document {doc_id!r}")
+    filename = str(document["filename"])
+    for directory in (kb.raw_dir, kb.archive_dir):
+        path = directory / filename
+        if path.is_file():
+            return path
+    raise FileNotFoundError(f"{filename} not found in raw/ or archive/")
+
+
+# One-slot cache so the extract and chunk stages of the same document parse
+# the PDF once per run instead of twice; keyed on (path, mtime) so a
+# replaced file is never served stale.
+_extract_cache: dict[tuple[str, float], Any] = {}
+
+
+def _extracted(kb: "KnowledgeBase", doc_id: str) -> Any:
+    from wikirag.extraction.pdf import extract
+
+    path = _source_pdf(kb, doc_id)
+    key = (str(path), path.stat().st_mtime)
+    if key not in _extract_cache:
+        _extract_cache.clear()
+        _extract_cache[key] = extract(path)
+    return _extract_cache[key]
+
+
+def extract_stage(kb: "KnowledgeBase", doc_id: str) -> None:
+    """PDF -> section tree in the store. Zero sections = extraction failure."""
+    doc = _extracted(kb, doc_id)
+    if not doc.sections:
+        raise RuntimeError("extraction found no text (scan without a text layer?)")
+    if kb.store.get_sections(doc_id):
+        return
+    from wikirag.ingestion.chunking import section_rows
+
+    kb.store.add_sections(doc_id, section_rows(doc_id, doc))
+
+
+def chunk_stage(kb: "KnowledgeBase", doc_id: str) -> None:
+    """Sections -> canonical chunks with stable IDs."""
+    if kb.store.get_document_chunks(doc_id):
+        return
+    from wikirag.ingestion.chunking import DEFAULT_MAX_TOKENS, chunk_document
+
+    max_tokens = int(kb.store.config_get(CHUNK_MAX_TOKENS_KEY, str(DEFAULT_MAX_TOKENS)))
+    kb.store.add_chunks(
+        chunk_document(doc_id, _extracted(kb, doc_id), max_tokens=max_tokens)
+    )
+
+
+def xrefs_stage(kb: "KnowledgeBase", doc_id: str) -> None:
+    """Chunks -> native cross-references (already idempotent)."""
+    from wikirag.ingestion.xrefs import apply_xrefs
+
+    apply_xrefs(kb, doc_id)
+
+
+def _default_embedder(model_name: str) -> Any:
+    from wikirag.llm.embeddings import get_embedder
+
+    return get_embedder(model_name)
+
+
+# Seam for tests and offline smoke runs: swap in a FakeEmbedder factory.
+_embedder_factory: Callable[[str], Any] = _default_embedder
+
+
+def content_hash(text: str) -> str:
+    """The content hash embeddings are tracked by (store + vector index)."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def index_stage(kb: "KnowledgeBase", doc_id: str) -> None:
+    """Chunks -> vectors in the KB index + embeddings meta rows.
+
+    Incremental by content hash: only chunks whose text or model changed are
+    re-embedded (docs/storage.md).
+    """
+    from wikirag.llm.embeddings import DEFAULT_EMBEDDING_MODEL
+    from wikirag.storage.vectors import INDEX_FILENAME, VectorIndex
+
+    model = kb.store.config_get(EMBEDDING_MODEL_KEY, DEFAULT_EMBEDDING_MODEL)
+    assert model is not None
+    chunks = kb.store.get_document_chunks(doc_id)
+    known = kb.store.embedding_hashes("chunk", model)
+    todo = [
+        (str(c["id"]), str(c["text"]), h)
+        for c in chunks
+        if known.get(str(c["id"])) != (h := content_hash(str(c["text"])))
+    ]
+    if not todo:
+        return
+    embedder = _embedder_factory(model)
+    index = VectorIndex.open(kb.vectors_dir, model, embedder.dim)
+    for start in range(0, len(todo), _EMBED_BATCH):
+        batch = todo[start : start + _EMBED_BATCH]
+        vectors = embedder.encode_passages([text for _, text, _ in batch])
+        for (chunk_id, _, text_hash), vector in zip(batch, vectors):
+            index.upsert(("chunk", chunk_id), text_hash, vector)
+            kb.store.upsert_embedding(
+                owner_kind="chunk",
+                owner_id=chunk_id,
+                model=model,
+                dim=embedder.dim,
+                vector_ref=INDEX_FILENAME,
+                content_hash=text_hash,
+            )
+    index.save()
+
+
+def register_default_stages() -> None:
+    """Wire the real stage implementations into the runner's registry."""
+    from wikirag.ingestion import runner
+
+    runner.register_stage("extract", extract_stage)
+    runner.register_stage("chunk", chunk_stage)
+    runner.register_stage("xrefs", xrefs_stage)
+    runner.register_stage("index", index_stage)

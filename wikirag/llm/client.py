@@ -27,6 +27,15 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence
 
 
+class AllKeysExhausted(Exception):
+    """Every credential a provider had left is spent (quota or unusable).
+
+    Provider-agnostic on purpose: the ingestion runner catches it to stop a
+    batch cleanly — and to distinguish "come back when quota resets" from a
+    real failure — without importing any provider module.
+    """
+
+
 @dataclass
 class Usage:
     prompt_tokens: int = 0

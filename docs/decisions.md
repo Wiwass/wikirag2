@@ -2,6 +2,18 @@
 
 Running record of design decisions. Newest first. Format: date, decision, why, alternatives set aside. Confidence annotations (0-100) are honest priors to be checked against the benchmark, not promises.
 
+## 2026-08-31 — Implementation, Wave 1
+
+**D14. Local models: `BAAI/bge-m3` for embedding, `BAAI/bge-reranker-v2-m3` for reranking.** Chosen on documented properties, not a benchmark — the retrieval-floor benchmark at Checkpoint A is what validates (or overturns) this choice, and swapping is a config change plus a re-embed, since the model name lives in `kb_config` and `VectorIndex` discards vectors from another space on model change (D13).
+
+Why: the binding constraint is **cross-lingual retrieval** — Italian queries against English corpora — and bge-m3 is trained for exactly that (multilingual, MIRACL/MLDR, one shared space across ~100 languages), where a query and its answer in different languages must land near each other. Its 8192-token window leaves an order of magnitude of margin over the 400-600-token chunks (the chunker reads `Embedder.max_seq_tokens`, so the margin is measured, not assumed), and dim 1024 is the size D13's benchmark was run at: ~200 MB resident at 50k vectors, comfortable. It needs no query/passage prefix or instruction, so the encoder's contract stays symmetric. The reranker is the matched model from the same family: cross-lingual at the *reranking* stage matters as much as at retrieval, because the reranker is the R0 floor and its absolute scores drive the no-answer gate (docs/retrieval.md) — a monolingual cross-encoder would systematically underscore correct English evidence for an Italian query and trip the gate. Both are ungated on HuggingFace and load through `sentence-transformers` with no `trust_remote_code`.
+
+Score scale, fixed here so the threshold is calibratable: `Reranker.score` returns `sigmoid(logit)` in (0, 1), applied inside the class rather than left to the library's default activation, which has changed across sentence-transformers versions. Relevant pairs land above ~0.5, clearly irrelevant ones below ~0.1; the actual `NO_ANSWER_THRESHOLD` is measured at Checkpoint A.
+
+Set aside: **gte-modernbert-base** (8192 context, dim 768, faster) — English-only, which is the one requirement that cannot be traded. **EmbeddingGemma-300M** (multilingual, small, Matryoshka dims) — 2048-token window, prompt-prefix convention, gated download, and a much shorter public track record on cross-lingual retrieval benchmarks; the honest reason to revisit it is cost, if bge-m3's ~560M params make ingest embedding the bottleneck. **multilingual-e5-large** — comparable multilingual quality but a 512-token window, too tight for the chunk sizes. Cost accepted: ~2.2 GB on disk per model and a slower encode than the 768-dim alternatives.
+
+Confidence: 75 that this pair survives Checkpoint A unchanged; the residual risk is throughput on CPU-only ingest, not retrieval quality.
+
 ## 2026-08-31 — Implementation, Wave 0
 
 **D13. Vector index: npz + numpy brute force; sqlite-vec deferred.** Micro-benchmark (the open question in docs/storage.md), random vectors at dim 1024, float32, single `index.npz` per KB, 12-core WSL2 box, median of 10 top-20 searches after warm-up:
@@ -48,6 +60,5 @@ Motivated by the graphs-vs-agents discussion (Cursor-style "no graphs for coding
 
 ## Deferred / open
 
-- Embedding model: long-context, multilingual candidates (bge-m3, gte-modernbert, EmbeddingGemma).
 - Two-way vault sync (user edits flowing back into the store): out of scope for now.
 - Auto-routing R by classifier vs manual depth flag as default UX.
