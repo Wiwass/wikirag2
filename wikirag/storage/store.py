@@ -2,9 +2,10 @@
 
 Responsibilities
 ----------------
-- Own the schema in docs/storage.md: documents, sections, chunks,
-  keywords, chunk_keywords, notes, note_sources, note_links, chunks_fts
-  (FTS5, BM25), embeddings meta, jobs, kb_config, llm_calls.
+- Own the schema in docs/storage.md: documents, sections, chunks, xrefs,
+  keywords, chunk_keywords, notes (with staleness), note_sources,
+  note_links (typed, grounded), chunks_fts (FTS5, BM25), embeddings meta,
+  jobs, kb_config, llm_calls, query_log, consolidation_queue.
 - Stable chunk IDs derived from (doc_id, structural path, ordinal) —
   deterministic across re-runs on the same source file.
 - Transactions per stage output: a document's chunks + FTS rows commit
@@ -15,8 +16,10 @@ Responsibilities
 Planned API
 -----------
 - class Store: open/close, migrate()
-- write ops grouped by stage: add_document, add_chunks, tag_chunks,
-  upsert_note, record_job, record_llm_call, forget_document, ...
-- read ops for retrieval: fts_search, get_chunks, get_note, neighbors,
-  config get/set. Read APIs double as the agent's tool backends (R3).
+- write ops grouped by stage: add_document, add_chunks, add_xrefs,
+  tag_chunks, upsert_note, record_job, record_llm_call, log_query,
+  queue_consolidation, forget_document, ...
+- read ops for retrieval: fts_search, get_chunks, section_window (the
+  read-big expansion), get_note, neighbors, xrefs_from, consolidation
+  demand, config get/set. Read APIs double as the agent's tool backends.
 """

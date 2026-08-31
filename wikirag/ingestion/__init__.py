@@ -1,8 +1,12 @@
 """Ingestion: idempotent per-document stages, tracked as jobs in the store.
 
-Stage sequence (contracts fixed in docs/ingestion.md, implementations open):
+Stage sequence (contracts fixed in docs/ingestion.md, enrich methods open):
 
-    extract -> chunk -> index [S0] -> enrich [S1+] -> synth [S2+]
+    extract -> chunk -> xrefs -> index [S0] -> summarize [S1+] -> enrich [S2+]
+
+Note synthesis is NOT an ingest stage: L2 notes are consolidated lazily
+(wikirag.synthesis.consolidation, D11). Ingest pays only for the layers
+above plus keyword tagging.
 
 Non-negotiable rules:
 1. No verbatim echo: LLM stages receive numbered chunks, return IDs + new
@@ -14,5 +18,6 @@ Non-negotiable rules:
 Modules:
     runner    job scheduling, resume, retry policy
     chunking  deterministic structure-aware chunker
+    xrefs     native cross-reference extraction (pattern-based, no LLM)
     enrich    OPEN research area: tagging + contextualization methods
 """
