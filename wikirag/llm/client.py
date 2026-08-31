@@ -11,10 +11,20 @@ Design notes:
 - File/PDF input is a provider capability flag, not part of the core call.
 - truncated + usage are first-class: callers always see finish state and
   token counts (v1 behavior, kept).
+- Providers should expose the model name they were configured with as a
+  `model` attribute: MeteredClient reads it to label recorded calls.
+
+Planned API
+-----------
+- class Usage: prompt/output/total/cached token counts
+- class LLMResult: text, truncated, usage, cost_estimate
+- class LLMClient(Protocol): generate(*, system, user, json_schema=None,
+  max_output_tokens=None) -> LLMResult
+- class FakeLLMClient: offline test double implementing the protocol
 """
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol, Sequence
 
 
 @dataclass
@@ -44,3 +54,38 @@ class LLMClient(Protocol):
         json_schema: dict | None = None,
         max_output_tokens: int | None = None,
     ) -> LLMResult: ...
+
+
+class FakeLLMClient:
+    """Deterministic offline LLMClient, shared by every module's tests.
+
+    Returns the given results in call order; once they are exhausted the
+    last one repeats, so a test that only cares about metering or wiring
+    can pass a single result and call generate() any number of times.
+    Every call is appended to `calls` as the keyword arguments it received.
+    """
+
+    def __init__(self, *results: LLMResult, model: str = "fake-model") -> None:
+        self.results: Sequence[LLMResult] = results
+        self.model = model
+        self.calls: list[dict[str, Any]] = []
+
+    def generate(
+        self,
+        *,
+        system: str,
+        user: str,
+        json_schema: dict | None = None,
+        max_output_tokens: int | None = None,
+    ) -> LLMResult:
+        self.calls.append(
+            {
+                "system": system,
+                "user": user,
+                "json_schema": json_schema,
+                "max_output_tokens": max_output_tokens,
+            }
+        )
+        if not self.results:
+            return LLMResult(text="")
+        return self.results[min(len(self.calls) - 1, len(self.results) - 1)]

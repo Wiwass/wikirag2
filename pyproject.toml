@@ -5,7 +5,19 @@ description = "Personal knowledge engine: retrieval index + readable wiki vault,
 requires-python = ">=3.11"
 # Dependencies are added as modules get implemented (see docs/ for planned stack:
 # sqlite (stdlib), sentence-transformers, rapidfuzz->removed, google-genai, pymupdf, ...)
-dependencies = []
+dependencies = [
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["wikirag*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
