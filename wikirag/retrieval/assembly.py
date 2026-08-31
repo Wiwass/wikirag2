@@ -1,6 +1,9 @@
 """Context assembly: one merged candidate list -> context under budget.
 
 - Single pool (chunks, notes, summaries — whatever scored), one scale.
+- Retrieve small, read big (D12): included chunks are expanded to their
+  section window (structural neighbors from the store), deduplicated by
+  chunk ID so expansion never double-counts budget.
 - Greedy fill under token budget with per-document and per-keyword
   diversity caps (v1's MAX_CHUNKS_PER_KEYWORD insight, generalized).
 - Dedup is structural: a chunk exists once, referenced by ID

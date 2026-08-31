@@ -10,9 +10,9 @@ Links are written to note_links as the note is stored; provenance to
 note_sources. Notes are indexed like any content. Regeneration is
 per-keyword, queued as jobs.
 
-Deferred-synthesis variant (LazyGraphRAG pattern, open): build/refresh a
-note the first time a query needs it, then cache. Same API, different
-trigger.
+Lazy by design (D11): this module only knows HOW to synthesize one note;
+WHEN is decided by consolidation.py (on-demand triggers, background jobs,
+staleness). Links are typed and, when possible, grounded in a chunk ID.
 
 Planned API
 -----------

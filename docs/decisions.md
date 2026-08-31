@@ -1,6 +1,16 @@
 # Decision log
 
-Running record of design decisions. Newest first. Format: date, decision, why, alternatives set aside.
+Running record of design decisions. Newest first. Format: date, decision, why, alternatives set aside. Confidence annotations (0-100) are honest priors to be checked against the benchmark, not promises.
+
+## 2026-08-31 — Memory model and retrieval redesign
+
+Motivated by the graphs-vs-agents discussion (Cursor-style "no graphs for coding" positions, v1's own benchmark, GraphRAG-Bench): explicit LLM-built graphs compete with two free association mechanisms (parametric knowledge, embedding neighborhoods) and only pay off as *navigable structure*, not as flattened context.
+
+**D12. Default retrieval shape: coarse-to-fine with verification.** Reranker moves into the R0 floor (local, milliseconds). R1 adds gist-layer orientation (boost, never filter — confidence 55) and the absolute no-answer threshold (75). R2 adds decomposition, a hard-capped CRAG-lite repair loop (65), and consolidation triggers. "Retrieve small, read big": search over small chunks, context gets section windows (85). Rejected: one-shot channel stacking as the default.
+
+**D11. Usage-driven consolidation.** The S slider means *consolidation eagerness*, not upfront work. L2 notes are built lazily (first query that needs them, or background jobs on hot/central concepts, driven by query_log) and cached with staleness tracking. Ingest cost collapses; the vault grows around actual use. Confidence: 85 on cost, 45 on answer-quality gain over S0 — the 45 is v1's honest lesson, and the design holds either way (the vault is a product in itself). Default for first-touch latency: defer to background; the current query proceeds with chunks.
+
+**D10. Graphs demoted to navigation and human product.** The only eagerly-built graph is the corpus's *native* one: section adjacency + explicit textual cross-references (xrefs, pattern-extracted, no LLM). Semantic wikilinks exist only typed and grounded (note_links.type, grounding_chunk_id), created during synthesis from shortlisted candidates. As a retrieval channel, graph expansion is experimental at R2, benchmark-gated, expected weak; investment priority goes to R3 agentic navigation, where links are traversed instead of flattened. Confidence in the demotion itself: 85 (v1 benchmark + literature agree).
 
 ## 2026-08-30 — Plan established
 

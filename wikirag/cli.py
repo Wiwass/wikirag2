@@ -9,6 +9,7 @@ Planned commands
   wikirag forget <kb> <doc>
   wikirag query <kb> "..." [--depth R0..R3]
   wikirag chat <kb> [--depth ...]
+  wikirag consolidate <kb> [--budget ...]  # run pending/background synthesis
   wikirag costs <kb>                      # summarize llm_calls metering
   wikirag eval <kb> [--grid ...]          # benchmark harness entry point
 

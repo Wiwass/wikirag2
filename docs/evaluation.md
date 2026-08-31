@@ -24,10 +24,12 @@ Per cell, report **quality** (judge score), **query cost** (latency, API tokens)
 
 ## Standing questions the harness must answer
 
-1. Does R1 (reranker) beat R0 at equal budget? (Expected: clearly yes; if not, the reranker choice is wrong.)
-2. Does any S level beat S0 at R1 with realistic budgets? (v1's answer was "barely"; v2's enrich/synthesis redesign must move this.)
-3. Where does R2 pay for itself vs R1? (Only on complex questions, presumably — the classifier routes accordingly.)
-4. Is R3 worth its latency for hard questions?
+1. Does the reranker beat plain RRF ordering at equal budget? (Expected: clearly yes; if not, the reranker choice is wrong.)
+2. Does any S level beat S0 at realistic budgets? (v1's answer was "barely"; D11's honest prior is 45 — if it stays low, S is priced as vault value, not retrieval value.)
+3. Does orientation (R1) help or hurt vs skipping it? (D12 prior: 55 — the weakest bet, boost-not-filter caps the downside.)
+4. Does the repair loop (R2) pay for its extra call on complex questions? (Prior: 65.)
+5. Does graph expansion at R2 add anything over R1 + structural expansion? (D10 prior: low; cut the channel without regret if not.)
+6. Is R3 worth its latency on hard questions? (Prior: 70.)
 
 ## Practices
 

@@ -24,11 +24,16 @@ sections(id, doc_id, parent_id, ordinal, title, level)        -- extracted struc
 chunks(id, doc_id, section_id, ordinal, text, token_count)
 -- id: stable, derived from (doc_id, section path, ordinal)
 
+-- Native structural graph (L0, no LLM — see docs/synthesis.md "Associations")
+xrefs(from_chunk_id, raw_ref, to_doc_id NULL, to_section_id NULL, kind)
+-- explicit cross-references in the text ("see Chapter 5"), pattern-extracted
+
 -- Concept layer (S2+)
 keywords(id, name, canonical_name)                            -- canonical_name for case/plural dedup
 chunk_keywords(chunk_id, keyword_id)                          -- LLM tags chunks; no text copied
-notes(id, keyword_id NULL, kind, text, updated_at)            -- kind: keyword|summary|overview
-note_links(from_note_id, to_keyword_id)                       -- the wikilink graph, first-class
+notes(id, keyword_id NULL, kind, text, updated_at, stale)     -- kind: keyword|summary|overview
+note_sources(note_id, chunk_id)                               -- grounding: what a note was built from
+note_links(from_note_id, to_keyword_id, type, grounding_chunk_id NULL)
 
 -- Retrieval indexes
 chunks_fts(text)                                              -- FTS5 external-content table → BM25
@@ -38,6 +43,11 @@ embeddings(owner_kind, owner_id, model, dim, vector_ref, content_hash)
 -- Operations
 jobs(id, doc_id, stage, status, attempts, last_error, updated_at)
 kb_config(key, value)                                         -- S level, model names, etc.
+llm_calls(id, ts, stage, role, model, tokens_in, tokens_out, cost, wall_ms)
+
+-- Usage (drives consolidation, docs/synthesis.md)
+query_log(id, ts, query, depth, anchors_json, hit_keywords_json, no_answer)
+consolidation_queue(keyword_id, reason, queued_at)            -- lazy-note requests
 ```
 
 ## Design points
@@ -46,7 +56,8 @@ kb_config(key, value)                                         -- S level, model 
 - **Incrementality**: appending a document touches only its rows. v1 rewrote multi-MB JSON files on every block.
 - **Embeddings track content by hash** (as in v1, the one mechanism worth keeping): re-embedding happens only when text or model changes. Orphan cleanup becomes a foreign-key delete, not a sync pass.
 - **Notes are content.** A keyword note is indexed (FTS + embedding) exactly like chunks; retrieval decides by score, not by hardcoded tier priority.
-- **The wikilink graph gets a real table.** v1 stored links only inside markdown text and re-parsed with regex at query time; `note_links` makes graph expansion a join, and orphan-link detection a query.
+- **The wikilink graph gets a real table.** v1 stored links only inside markdown text and re-parsed with regex at query time; `note_links` makes graph expansion a join, and orphan-link detection a query. Links carry a `type` and, when possible, a `grounding_chunk_id` (D10: untyped "related-to" edges add nothing over embedding neighborhoods).
+- **Usage is data.** `query_log` and `consolidation_queue` drive lazy synthesis (D11): what gets asked determines what gets consolidated. `llm_calls` makes every cost claim measurable.
 
 ## Vault export
 

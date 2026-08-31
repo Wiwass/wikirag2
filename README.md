@@ -24,36 +24,37 @@ Conclusion: the wiki layer's real product is the **readable vault** (and support
 
 ### Two axes, two sliders
 
-**Synthesis level `S` — per knowledge base, ingestion time.** How much LLM work is invested in making the KB readable and conceptually organized.
+**Synthesis level `S` — per knowledge base: consolidation eagerness.** How eagerly the KB invests LLM work in readable, conceptually organized artifacts. Above S1, synthesis is **usage-driven** (D11): notes are built lazily when queries need them, plus background consolidation of hot/central concepts.
 
-| Level | Name | What is built |
+| Level | Name | What exists |
 |---|---|---|
-| S0 | Index only | Chunks + embeddings + lexical index. No wiki. Cheapest possible ingest. |
-| S1 | Summaries | S0 + per-document/section summaries (retrievable, browsable). |
-| S2 | Wiki | S1 + keyword notes with wikilinks (the v1 vault, rebuilt on chunk references). |
-| S3 | Atlas | S2 + overview map note, curated hub pages, link curation passes. |
+| S0 | Index only | Chunks + embeddings + FTS + native xrefs. No wiki. Cheapest ingest, and the benchmark control. |
+| S1 | Gist | S0 + per-document/section summaries (indexed, browsable, entry points for orientation). |
+| S2 | Wiki (lazy) | S1 + keyword tagging at ingest; notes consolidated on demand and in background, cached with staleness tracking. |
+| S3 | Atlas | S2 + proactive consolidation, overview map, hub pages, link curation. |
 
-**Retrieval depth `R` — per query (user-set or auto-routed).** How much work a single question is allowed to cost.
+**Retrieval depth `R` — per query (user-set or auto-routed).** Default shape: coarse-to-fine with verification (D12). "Retrieve small, read big" and the local reranker are part of the floor.
 
 | Level | Name | What runs |
 |---|---|---|
-| R0 | Lookup | Single hybrid search (BM25 + dense, RRF), top-k straight into context. |
-| R1 | Ranked | R0 + cross-encoder reranking. The default. |
-| R2 | Multi-hop | R1 + query decomposition into sub-questions + graph-neighbor content expansion. |
-| R3 | Agentic | An agent navigates the KB with tools (search, read note, follow links, read chunks) until satisfied. |
+| R0 | Lookup | Hybrid BM25+dense, RRF fusion, cross-encoder rerank, structural expansion. One pass. |
+| R1 | Default | R0 + gist-layer orientation (active regions boost) + absolute no-answer threshold. |
+| R2 | Deep | R1 + sub-question decomposition + capped repair loop (CRAG-lite) + lazy-consolidation triggers. |
+| R3 | Agentic | An agent navigates with tools (search, read note/chunk/section, follow links) until satisfied. |
 
-Levels degrade gracefully: any R works on any S (R2/R3 simply have fewer structures to exploit on an S0 KB).
+Levels degrade gracefully: any R works on any S (deeper R simply has fewer structures to exploit on an S0 KB).
 
 ### Design principles
 
 1. **Chunks are canonical.** Deterministic, local, structure-aware chunking with stable IDs. Everything (keywords, notes, retrieval results) references chunk IDs. **The LLM never echoes source text back**; verbatim always comes from storage.
-2. **One transactional source of truth.** SQLite per KB (content, links, FTS index, job state). The markdown vault is a regenerable *view*, never the primary store.
-3. **One embedding space.** A single modern embedding model, chunks sized to fit its context. No parallel embedding tiers.
-4. **Retrieval floor = 2026 standard.** BM25 + dense fused with RRF, cross-encoder reranker. Anything fancier must beat this in the benchmark.
-5. **Synthesis is decoupled and optional.** Wiki notes are *products* of ingestion and *inputs* to retrieval (indexed like any document), not a privileged hardcoded tier.
-6. **Provider-agnostic LLM layer.** Minimal client interface; Gemini is the first implementation. Cost metering built in, because cheap ingest is an explicit goal.
-7. **Benchmark as regression gate.** The v1 harness (blind LLM judge, ablation tiers) is ported early; every pipeline claim gets measured against the S0/R0 floor.
-8. **Resumability is first-class.** Ingestion is a set of idempotent, per-unit jobs tracked in SQLite, not ad-hoc pending files.
+2. **One transactional source of truth.** SQLite per KB (content, links, xrefs, FTS index, usage, job state). The markdown vault is a regenerable *view*, never the primary store.
+3. **One embedding space.** A single modern embedding model, chunks sized to fit its context. The embedding neighborhood is the system's primary association mechanism (D10).
+4. **Retrieval floor = 2026 standard.** BM25 + dense fused with RRF, cross-encoder reranker, retrieve-small-read-big. Anything fancier must beat this in the benchmark.
+5. **Consolidation follows use.** Synthesis above the gist layer is lazy + background, driven by the query log (D11). The vault grows around what you actually ask.
+6. **Graphs are for navigation, not representation.** Only the corpus's native structure (adjacency, explicit xrefs) is materialized eagerly; semantic links are typed, grounded, and earn retrieval roles only through the benchmark (D10).
+7. **Provider-agnostic LLM layer.** Minimal client interface; Gemini first. Cost metering built in, because cheap ingest is an explicit goal.
+8. **Benchmark as regression gate.** The v1 harness (blind LLM judge, ablation tiers) is ported early; every claim is measured against the S0/R0 floor. Design bets carry explicit confidence priors (docs/decisions.md).
+9. **Resumability is first-class.** Ingestion is a set of idempotent, per-unit jobs tracked in SQLite, not ad-hoc pending files.
 
 ## Planned repository layout
 
@@ -61,14 +62,15 @@ Levels degrade gracefully: any R works on any S (R2/R3 simply have fewer structu
 wikirag2/
 ├── README.md                  # this file — master overview
 ├── docs/
-│   ├── architecture.md        # components, data flow, contracts between layers
+│   ├── architecture.md        # memory model, components, data flow, contracts
 │   ├── storage.md             # SQLite schema draft, vault-as-view, ID scheme
 │   ├── ingestion.md           # stage contracts + OPEN research on cheap ingest methods
-│   ├── synthesis.md           # the S slider: wiki notes, overview, link curation
-│   ├── retrieval.md           # the R slider: hybrid search, rerank, graph, agentic mode
+│   ├── synthesis.md           # the S slider: memory layers, lazy consolidation, atlas
+│   ├── retrieval.md           # the R slider: coarse-to-fine, rerank, verify, agentic
 │   ├── llm.md                 # provider-agnostic client, cost metering, key pooling
 │   ├── evaluation.md          # benchmark harness, metrics, regression workflow
-│   └── decisions.md           # running log of design decisions (ADR-lite)
+│   ├── implementation.md      # wave plan + conventions for (sub)agent implementation
+│   └── decisions.md           # running log of design decisions (ADR-lite, with priors)
 ├── wikirag/                   # the package (skeleton: docstrings only, implemented module by module)
 │   ├── cli.py                 # CLI: kb management, ingest, query/chat, export, costs, eval
 │   ├── config.py              # KB registry, KnowledgeBase handle, S/R enums
@@ -76,9 +78,9 @@ wikirag2/
 │   ├── storage/               # store.py (sqlite), vectors.py, vault.py (export)
 │   ├── llm/                   # client.py (protocol), gemini.py, meter.py, embeddings.py
 │   ├── extraction/            # pdf.py: PDF → structured sections (no LLM)
-│   ├── ingestion/             # runner.py (jobs), chunking.py, enrich.py (open research)
-│   ├── synthesis/             # summaries.py (S1), notes.py (S2), atlas.py (S3)
-│   ├── retrieval/             # search.py, rerank.py, router.py, graph.py, assembly.py
+│   ├── ingestion/             # runner.py (jobs), chunking.py, xrefs.py, enrich.py (open)
+│   ├── synthesis/             # summaries.py, notes.py, consolidation.py, atlas.py
+│   ├── retrieval/             # search, rerank, orient, router, graph, verify, assembly
 │   ├── agent/                 # loop.py: R3 agentic navigation
 │   └── eval/                  # harness.py: benchmark grid + blind judge
 └── tests/
@@ -90,9 +92,7 @@ Ingestion **methods** are unspecified on purpose. The stage *contracts* (what go
 
 ## Roadmap
 
-1. **Plan** (this repo, now): structure, contracts, decisions.
-2. **Skeleton**: package layout, storage schema, LLM client, CLI stubs.
-3. **Floor**: extraction → chunking → S0 index → R0/R1 retrieval → chat. Port benchmark, measure the floor.
-4. **Synthesis**: S1–S2 on chunk references, vault export.
-5. **Depth**: R2 (decomposition + graph), S3 (atlas), then R3 (agentic).
-6. Continuous: ingest-method research measured against the floor.
+1. **Plan** (done): structure, contracts, decisions D1–D12.
+2. **Skeleton** (done): package layout with per-module specs as docstrings.
+3. **Implementation by waves** (next): see [docs/implementation.md](docs/implementation.md) — foundations → ingest floor → retrieval floor (Checkpoint A: measured S0 baseline) → depth (R1/R2) → synthesis (lazy S1–S3) + vault → agent (R3).
+4. Continuous: ingest-method research measured against the floor; benchmark standing questions in docs/evaluation.md.

@@ -9,10 +9,13 @@ Ingestion is a sequence of idempotent stages per document, tracked in the `jobs`
 ```
 extract   PDF → sections (structure-aware, no LLM)
 chunk     sections → chunks with stable IDs (deterministic, local, sized to embedding model)
+xrefs     chunks → native cross-references (pattern-extracted, no LLM)
 index     chunks → FTS rows + embeddings                    [this alone = S0]
-enrich    chunks → chunk_keywords tags, chunk context       [S1+; LLM or local — open]
-synth     tagged chunks → notes, links, overview            [S2+; see synthesis.md]
+summarize documents → L1 gist summaries                     [S1+]
+enrich    chunks → chunk_keywords tags, chunk context       [S2+; LLM or local — open]
 ```
+
+Note synthesis is NOT an ingest stage anymore: L2 notes are consolidated lazily at query time and in background (D11, docs/synthesis.md). Ingest pays only for extract/chunk/xrefs/index/summarize/tagging.
 
 Non-negotiable rules (the lessons v1 paid for):
 

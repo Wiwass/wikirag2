@@ -1,4 +1,5 @@
-"""Second stage: cross-encoder reranking (R1, the default depth).
+"""Second stage: cross-encoder reranking. Part of the R0 floor (D12):
+local and cheap, there is no reason to make it a level.
 
 Takes a wide first-stage pool (e.g. top-50), scores each candidate's text
 against the query with the local reranker, returns absolute scores.
