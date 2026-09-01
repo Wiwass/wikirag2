@@ -19,18 +19,25 @@ from wikirag.config import WIKIRAG_HOME_ENV, KnowledgeBase, RetrievalDepth, crea
 from wikirag.eval import harness
 from wikirag.eval.harness import (
     JUDGE_RESPONSE_SCHEMA,
+    MANIFEST_FILENAME,
+    NOISE_THRESHOLD,
     GoldQuestion,
     Judgment,
     _validate_judgment,
     answer_run,
+    cell_filename,
+    compare,
     judge_answer,
     judge_answers,
     load_dataset,
     match_doc_ids,
     parse_cited_pages,
+    report_markdown,
     retrieval_eval,
+    run_grid,
     slugify,
     summarize,
+    write_report,
 )
 from wikirag.llm.client import AllKeysExhausted, FakeLLMClient, LLMResult, Usage
 from wikirag.llm.embeddings import FakeReranker
@@ -683,3 +690,501 @@ def test_summarize_unjudged_run_reports_no_means() -> None:
     assert rows[0]["judged"] == 0
     assert rows[0]["mean_total"] is None
     assert rows[0]["sem_total"] is None
+
+
+# --------------------------------------------------------------- grid runner
+
+BASELINE_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "benchmarks"
+    / "arsmagicaV2"
+    / "runs"
+    / "baseline_S0_R1_2026-09-01"
+)
+
+GRID_QUESTIONS = [
+    gold("q1", "botch dice chance", ["AG0205 - Ars Magica"], "page 7"),
+    gold("q2", "library summae", ["AG0280 - Covenants"], "page 95", qtype="complex"),
+]
+
+
+@pytest.fixture()
+def recorded_answers(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int, str]]:
+    """Replace `answer` in the harness namespace: no retrieval, no provider."""
+    calls: list[tuple[str, int, str]] = []
+
+    def fake_answer(_kb, query, **kwargs):
+        calls.append((kwargs["depth"].value, kwargs["budget_tokens"], query))
+        return stub_answer(f"answer to {query}")
+
+    monkeypatch.setattr(harness, "answer", fake_answer)
+    return calls
+
+
+def grid(kb: KnowledgeBase, out_dir: Path, **overrides) -> harness.GridReport:
+    """A 2x2 grid over GRID_QUESTIONS with fake answer and judge clients."""
+    options = dict(
+        client=FakeLLMClient(LLMResult(text="unused"), model="fake-answer"),
+        judge_client=FakeLLMClient(LLMResult(text=judge_json(10, 8, 5)), model="fake-judge"),
+        depths=("R0", "R1"),
+        budgets=(2500, 10_000),
+        out_dir=out_dir,
+        dataset_path=DATASET_PATH,
+        corpus="two books",
+    )
+    options.update(overrides)
+    return run_grid(kb, GRID_QUESTIONS, **options)
+
+
+def test_cell_filename_is_deterministic_and_matches_the_baseline() -> None:
+    assert cell_filename("R1", 10_000) == "answers_R1_10k.json"
+    assert (BASELINE_DIR / cell_filename("R1", 10_000)).is_file()
+    assert cell_filename(RetrievalDepth.R0, 2500) == "answers_R0_2500.json"
+    assert cell_filename("r2", 25_000) == "answers_R2_25k.json"
+
+
+def test_run_grid_runs_every_cell_and_writes_one_artifact_each(
+    kb: KnowledgeBase, tmp_path: Path, recorded_answers: list[tuple[str, int, str]]
+) -> None:
+    out = tmp_path / "grid"
+    report = grid(kb, out)
+
+    assert sorted(path.name for path in out.glob("answers_*.json")) == [
+        "answers_R0_10k.json",
+        "answers_R0_2500.json",
+        "answers_R1_10k.json",
+        "answers_R1_2500.json",
+    ]
+    # Grid order: depth outer, budget inner; both questions asked per cell.
+    assert [(depth, budget) for depth, budget, _q in recorded_answers] == [
+        ("R0", 2500),
+        ("R0", 2500),
+        ("R0", 10_000),
+        ("R0", 10_000),
+        ("R1", 2500),
+        ("R1", 2500),
+        ("R1", 10_000),
+        ("R1", 10_000),
+    ]
+
+    assert [cell.status for cell in report.cells] == ["done"] * 4
+    assert len(report.completed()) == 4
+    for cell in report.cells:
+        assert (cell.n, cell.judged) == (2, 2)
+        assert cell.mean_total == pytest.approx(23.0)  # 10 + 8 + 5
+        assert cell.sem_total == 0.0  # both judgments identical
+        assert cell.cost == 0.0  # the fake clients are not metered
+        assert not cell.error
+
+    judged = json.loads((out / "answers_R1_10k.json").read_text(encoding="utf-8"))
+    assert judged["meta"]["depth"] == "R1"
+    assert [r["judgment"]["total"] for r in judged["results"]] == [23, 23]
+    assert (out / MANIFEST_FILENAME).is_file()
+    assert (out / "summary.md").is_file()
+
+
+def test_run_grid_manifest_records_what_produced_the_numbers(
+    kb: KnowledgeBase, tmp_path: Path, recorded_answers: list[tuple[str, int, str]]
+) -> None:
+    out = tmp_path / "grid"
+    report = grid(kb, out)
+    manifest = json.loads((out / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+    assert manifest == report.manifest()
+    assert manifest["run_id"] == "grid"
+    assert manifest["kb"] == "bench"
+    assert manifest["synthesis_level"] == "S0"  # the S axis: the KB's own level
+    assert manifest["corpus"] == "two books"
+    assert manifest["dataset_path"] == str(DATASET_PATH)
+    assert len(manifest["dataset_sha256"]) == 64
+    assert manifest["n_questions"] == 2
+    assert manifest["git_commit"]
+    assert manifest["answer_model"] == "fake-answer"
+    assert manifest["judge_model"] == "fake-judge"
+    assert manifest["embedding_model"] == "BAAI/bge-m3"
+    assert manifest["reranker_model"] == "BAAI/bge-reranker-v2-m3"
+    assert manifest["depths"] == ["R0", "R1"]
+    assert manifest["budgets"] == [2500, 10_000]
+    assert manifest["resume"] is True
+    assert manifest["started_at"] and manifest["finished_at"]
+    assert manifest["aborted"] == ""
+    assert [(c["depth"], c["budget_tokens"], c["artifact"]) for c in manifest["cells"]] == [
+        ("R0", 2500, "answers_R0_2500.json"),
+        ("R0", 10_000, "answers_R0_10k.json"),
+        ("R1", 2500, "answers_R1_2500.json"),
+        ("R1", 10_000, "answers_R1_10k.json"),
+    ]
+
+
+def test_run_grid_resume_skips_completed_cells_and_reruns_incomplete_ones(
+    kb: KnowledgeBase, tmp_path: Path, recorded_answers: list[tuple[str, int, str]]
+) -> None:
+    out = tmp_path / "grid"
+    grid(kb, out, depths=("R0",))
+    assert len(recorded_answers) == 4
+
+    # The 10k cell lost a question: half an artifact is not a finished cell.
+    partial_path = out / "answers_R0_10k.json"
+    partial = json.loads(partial_path.read_text(encoding="utf-8"))
+    partial["results"] = partial["results"][:1]
+    partial_path.write_text(json.dumps(partial), encoding="utf-8")
+
+    recorded_answers.clear()
+    report = grid(kb, out, depths=("R0",))
+
+    assert [cell.status for cell in report.cells] == ["resumed", "done"]
+    assert [(depth, budget) for depth, budget, _q in recorded_answers] == [
+        ("R0", 10_000),
+        ("R0", 10_000),
+    ]
+    assert report.cells[0].cost is None  # resumed: not paid for in this run
+    assert report.cells[1].cost == 0.0
+    assert len(json.loads(partial_path.read_text(encoding="utf-8"))["results"]) == 2
+
+
+def test_run_grid_reruns_a_cell_whose_judgments_are_missing(
+    kb: KnowledgeBase, tmp_path: Path, recorded_answers: list[tuple[str, int, str]]
+) -> None:
+    out = tmp_path / "grid"
+    grid(kb, out, depths=("R0",), budgets=(2500,))
+    path = out / "answers_R0_2500.json"
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    del artifact["results"][1]["judgment"]
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    recorded_answers.clear()
+    report = grid(kb, out, depths=("R0",), budgets=(2500,))
+
+    assert [cell.status for cell in report.cells] == ["done"]
+    assert len(recorded_answers) == 2
+
+
+def test_run_grid_without_resume_reruns_every_cell(
+    kb: KnowledgeBase, tmp_path: Path, recorded_answers: list[tuple[str, int, str]]
+) -> None:
+    out = tmp_path / "grid"
+    grid(kb, out, depths=("R0",), budgets=(2500,))
+    recorded_answers.clear()
+
+    report = grid(kb, out, depths=("R0",), budgets=(2500,), resume=False)
+
+    assert [cell.status for cell in report.cells] == ["done"]
+    assert len(recorded_answers) == 2
+
+
+def test_run_grid_aborts_on_exhausted_keys_and_records_progress(
+    kb: KnowledgeBase, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_answer(_kb, query, **kwargs):
+        if kwargs["budget_tokens"] == 10_000:
+            raise AllKeysExhausted("free tier spent")
+        return stub_answer()
+
+    monkeypatch.setattr(harness, "answer", fake_answer)
+    out = tmp_path / "grid"
+
+    report = grid(kb, out)
+
+    assert [cell.status for cell in report.cells] == ["done", "aborted", "pending", "pending"]
+    assert report.aborted.startswith("AllKeysExhausted:")
+    assert [cell.artifact for cell in report.completed()] == ["answers_R0_2500.json"]
+    # The aborted cell keeps its partial artifact; the R1 cells were never run.
+    assert (out / "answers_R0_10k.json").is_file()
+    assert not (out / "answers_R1_2500.json").exists()
+
+    manifest = json.loads((out / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    assert manifest["aborted"].startswith("AllKeysExhausted:")
+    assert [cell["status"] for cell in manifest["cells"]] == [
+        "done",
+        "aborted",
+        "pending",
+        "pending",
+    ]
+    assert manifest["cells"][1]["error"].startswith("AllKeysExhausted:")
+
+
+def test_run_grid_resumes_after_an_abort(
+    kb: KnowledgeBase, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quota: dict[str, bool] = {"spent": True}
+
+    def fake_answer(_kb, query, **kwargs):
+        if quota["spent"] and kwargs["budget_tokens"] == 10_000:
+            raise AllKeysExhausted("free tier spent")
+        return stub_answer()
+
+    monkeypatch.setattr(harness, "answer", fake_answer)
+    out = tmp_path / "grid"
+    grid(kb, out, depths=("R0",))
+
+    quota["spent"] = False  # quota came back
+    report = grid(kb, out, depths=("R0",))
+
+    assert [cell.status for cell in report.cells] == ["resumed", "done"]
+    assert not report.aborted
+
+
+def test_run_grid_rejects_an_empty_axis(kb: KnowledgeBase, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="at least one depth"):
+        grid(kb, tmp_path / "grid", budgets=())
+
+
+# ------------------------------------------------------------------- compare
+
+
+def totals_artifact(simple: list[int], complex_: list[int], *, judged: bool = True) -> dict:
+    """A judged artifact whose only interesting field is each result's total."""
+
+    def result(qid: str, qtype: str, total: int) -> dict:
+        record = {"id": qid, "type": qtype, "question": f"{qid}?", "answer": "text"}
+        if judged:
+            record["judgment"] = {
+                "correctness": total,
+                "completeness": 0,
+                "groundedness": 0,
+                "total": total,
+                "rationale": "",
+                "fallback": False,
+            }
+        return record
+
+    return {
+        "meta": {"kb": "bench", "depth": "R1", "budget_tokens": 10_000},
+        "results": [result(f"s{i}", "simple", t) for i, t in enumerate(simple)]
+        + [result(f"c{i}", "complex", t) for i, t in enumerate(complex_)],
+    }
+
+
+def test_compare_reports_a_clear_win() -> None:
+    rows = {
+        row["subset"]: row
+        for row in compare(
+            totals_artifact([10, 10], [10, 10]),
+            totals_artifact([20, 20], [20, 20]),
+        )
+    }
+    assert rows["overall"]["baseline_mean"] == pytest.approx(10.0)
+    assert rows["overall"]["run_mean"] == pytest.approx(20.0)
+    assert rows["overall"]["delta"] == pytest.approx(10.0)
+    assert rows["overall"]["verdict"] == "improved"
+    assert rows["simple"]["verdict"] == "improved"
+    assert rows["complex"]["verdict"] == "improved"
+    assert rows["overall"]["noise_threshold"] == NOISE_THRESHOLD
+
+
+def test_compare_reports_a_clear_loss() -> None:
+    rows = {
+        row["subset"]: row
+        for row in compare(totals_artifact([20, 20], [20, 20]), totals_artifact([4, 4], [4, 4]))
+    }
+    assert rows["overall"]["delta"] == pytest.approx(-16.0)
+    assert rows["overall"]["verdict"] == "regressed"
+
+
+def test_compare_calls_a_small_difference_noise() -> None:
+    rows = {
+        row["subset"]: row
+        for row in compare(
+            totals_artifact([20, 20], [20, 20]), totals_artifact([22, 22], [22, 22])
+        )
+    }
+    assert rows["overall"]["delta"] == pytest.approx(2.0)
+    assert rows["overall"]["verdict"] == "within noise"
+
+
+def test_compare_verdict_flips_exactly_at_the_threshold() -> None:
+    at = compare(totals_artifact([20], [20]), totals_artifact([23], [23]))[-1]
+    below = compare(totals_artifact([20], [20]), totals_artifact([22, 23], [22, 23]))[-1]
+    assert at["delta"] == pytest.approx(NOISE_THRESHOLD)
+    assert at["verdict"] == "improved"
+    assert below["verdict"] == "within noise"
+
+
+def test_compare_combines_the_two_sems() -> None:
+    # baseline totals 10,20 -> SEM 5; run totals 30,40 -> SEM 5.
+    row = compare(totals_artifact([10, 20], []), totals_artifact([30, 40], []))[-1]
+    assert row["baseline_sem"] == pytest.approx(5.0)
+    assert row["run_sem"] == pytest.approx(5.0)
+    assert row["delta_sem"] == pytest.approx(50**0.5)
+
+
+def test_compare_reports_no_data_for_an_unjudged_run() -> None:
+    row = compare(totals_artifact([20], [20]), totals_artifact([20], [20], judged=False))[-1]
+    assert row["run_mean"] is None
+    assert row["delta"] is None
+    assert row["verdict"] == "no data"
+
+
+def test_compare_reads_paths_and_a_run_directory(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "answers_R1_10k.json").write_text(
+        json.dumps(totals_artifact([26, 26], [26, 26])), encoding="utf-8"
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(totals_artifact([20, 20], [20, 20])), encoding="utf-8")
+
+    row = compare(baseline, run_dir)[-1]
+    assert row["delta"] == pytest.approx(6.0)
+    assert row["verdict"] == "improved"
+
+
+def test_compare_refuses_an_ambiguous_run_directory(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    for name in ("answers_R0_10k.json", "answers_R1_10k.json"):
+        (run_dir / name).write_text(json.dumps(totals_artifact([20], [20])), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one answers_"):
+        compare(run_dir, run_dir)
+
+
+# --------------------------------------------------------- the frozen baseline
+
+
+def test_frozen_baseline_still_summarizes() -> None:
+    rows = {row["subset"]: row for row in summarize(BASELINE_DIR / "answers_R1_10k.json")}
+    overall = rows["overall"]
+    assert (overall["n"], overall["judged"]) == (30, 30)
+    assert overall["mean_total"] == pytest.approx(20.83, abs=0.005)
+    assert overall["sem_total"] == pytest.approx(1.61, abs=0.005)
+    assert rows["simple"]["mean_total"] == pytest.approx(25.07, abs=0.005)
+    assert rows["complex"]["mean_total"] == pytest.approx(16.60, abs=0.005)
+    assert overall["errors"] == 0 and overall["fallback"] == 0
+
+
+def test_compare_against_the_frozen_baseline_is_flat() -> None:
+    rows = compare(BASELINE_DIR, BASELINE_DIR / "answers_R1_10k.json")
+    assert [row["subset"] for row in rows] == ["simple", "complex", "overall"]
+    assert all(row["delta"] == pytest.approx(0.0) for row in rows)
+    assert {row["verdict"] for row in rows} == {"within noise"}
+
+
+def test_report_markdown_of_the_frozen_baseline_run() -> None:
+    text = report_markdown(BASELINE_DIR)
+    assert "baseline_S0_R1_2026-09-01" in text
+    assert "| R1 | 10000 | 15 | 15 |" in text  # the simple-question row
+    assert "20.8" in text  # the overall mean
+    assert "gemini-3.5-flash-lite" in text  # judge model, from the manifest
+
+
+# ---------------------------------------------------------- markdown reporting
+
+
+def test_report_markdown_covers_every_cell_and_the_standing_questions(
+    kb: KnowledgeBase, tmp_path: Path, recorded_answers: list[tuple[str, int, str]]
+) -> None:
+    out = tmp_path / "grid"
+    grid(kb, out)
+    text = report_markdown(out)
+
+    for depth in ("R0", "R1"):
+        for budget in ("2500", "10000"):
+            assert f"| {depth} | {budget} |" in text
+    assert "Simple questions" in text and "Complex questions" in text
+    assert "23.0" in text and "±0.0" in text
+    assert "Note on significance" in text and "3 points" in text
+    assert "Query cost per cell" in text and "$0.0000" in text
+    assert "Standing questions" in text
+    # R0 and R1 are both in the grid, so Q3 is answerable; Q6 needs R3.
+    assert "| Q3 | Does orientation (R1) help or hurt vs skipping it? | yes" in text
+    assert "| Q6 |" in text and "no — this grid has no R3 cell" in text
+    assert "no — needs a second grid on a KB at another synthesis level" in text
+
+    written = write_report(out)
+    assert written == out / "summary.md"
+    assert written.read_text(encoding="utf-8") == text
+
+
+def test_report_markdown_of_an_empty_run_directory(tmp_path: Path) -> None:
+    text = report_markdown(tmp_path / "nothing-here")
+    assert "No cell artifacts" in text
+    assert "Manifest" in text
+
+
+def test_report_markdown_of_a_partial_run_without_a_manifest(tmp_path: Path) -> None:
+    run_dir = tmp_path / "partial"
+    run_dir.mkdir()
+    (run_dir / "answers_R1_10k.json").write_text(
+        json.dumps(totals_artifact([20, 26], [], judged=False)), encoding="utf-8"
+    )
+    text = report_markdown(run_dir)
+    assert "| R1 | 10000 |" in text
+    assert "—" in text  # no judgments, no mean, no metered cost
+    assert "missing" in text
+
+
+# ------------------------------------------------------------- CLI wiring
+
+# `wikirag eval` lives in cli.py but drives only this module, so its offline
+# smoke test lives with the harness rather than with the CLI's own tests.
+
+
+def tiny_dataset(tmp_path: Path) -> Path:
+    path = tmp_path / "dataset.json"
+    path.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "id": question.id,
+                        "type": question.type,
+                        "question": question.question,
+                        "gold_answer": question.gold_answer,
+                        "key_points": question.key_points,
+                        "source_docs": question.source_docs,
+                        "citation": question.citation,
+                    }
+                    for question in GRID_QUESTIONS
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_cli_eval_runs_the_grid_offline(
+    kb: KnowledgeBase,
+    tmp_path: Path,
+    recorded_answers: list[tuple[str, int, str]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from wikirag.cli import main
+
+    out = tmp_path / "run"
+    code = main(
+        [
+            "eval",
+            "bench",
+            "--depths",
+            "R0,R1",
+            "--budgets",
+            "2500",
+            "--dataset",
+            str(tiny_dataset(tmp_path)),
+            "--out",
+            str(out),
+            "--compare",
+            str(BASELINE_DIR / "answers_R1_10k.json"),
+            "--fake",
+        ]
+    )
+
+    assert code == 0
+    assert [(depth, budget) for depth, budget, _q in recorded_answers] == [
+        ("R0", 2500),
+        ("R0", 2500),
+        ("R1", 2500),
+        ("R1", 2500),
+    ]
+    assert (out / "answers_R0_2500.json").is_file()
+    assert (out / "answers_R1_2500.json").is_file()
+    assert (out / MANIFEST_FILENAME).is_file()
+    assert (out / "summary.md").is_file()
+
+    printed = capsys.readouterr().out
+    assert "bench [S0]" in printed
+    assert "R0" in printed and "done" in printed
+    assert "summary.md" in printed
+    # --fake judges everything 0, which is a regression against the baseline.
+    assert "regressed" in printed

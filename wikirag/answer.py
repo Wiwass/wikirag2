@@ -11,20 +11,28 @@ Shared by `wikirag query` and `wikirag chat` (and by eval runners):
 Depth dispatch: R0-R2 -> retrieval pipeline + single generate call;
 R3 -> wikirag.agent.loop.
 
-Two prompt features of the spec belong to later waves and have no code
-here yet: the complex-question addendum listing sub-questions (needs
-`retrieval.router`, Wave 3) and the overview primer (needs an S3 atlas,
-Wave 4, and `assembly` reserves its slot).
+One prompt feature of the spec still belongs to a later wave: the overview
+primer needs an S3 atlas (Wave 4), and `assembly` reserves its slot.
 
-Pipeline (the R0 path, currently the only one)
----------------------------------------------
-hybrid_search([query], k=pool_size) -> rerank -> no-answer gate ->
-assemble under the context budget -> one client.generate.
+Depth pipeline
+--------------
+R0 (the benchmark control): hybrid_search([query]) -> rerank -> assemble
+-> one generate. No orientation, and deliberately no no-answer gate: R0
+answers from whatever it found, however weak.
 
-R0, R1 and R2 all run this path today: R1's orientation and R2's
-decomposition/repair arrive in Wave 3, and until they exist the three
-levels are deliberately equivalent (the level is still accepted, logged
-and reported, so nothing downstream has to change when they diverge).
+R1 (default) adds orientation over the gist layer (a bounded boost on the
+first-stage scale, never a filter) and the absolute no-answer gate. On an
+S0 KB orientation finds no gist and degrades to identity, so R1 differs
+from R0 only by the gate until summaries exist.
+
+R2 adds decomposition and repair: the router classifies the question and
+its sub-questions become extra search anchors fused by RRF; after
+assembly a coverage judge may emit targeted queries for what is missing,
+and one more retrieval round runs. The loop is hard-capped at
+verify.DEFAULT_MAX_ROUNDS so cost stays predictable, and both the router
+and the judge degrade to the simple path on failure rather than blocking
+the answer.
+
 R3 raises NotImplementedError until Wave 5 wires `agent.loop`.
 
 Budget split
@@ -56,21 +64,27 @@ Public API
 - GROUNDING_SYSTEM_PROMPT, NO_ANSWER_TEXT
 - HISTORY_WINDOW, RESERVED_ANSWER_TOKENS, DEFAULT_BUDGET_TOKENS,
   DEFAULT_POOL_SIZE
-- class Answer: text, provenance, usage, no_answer, depth, context_tokens
+- class Answer: text, provenance, usage, no_answer, depth,
+  context_tokens, anchors, repair_rounds
 - answer(kb, query, *, depth=R1, client, history=None,
-  budget_tokens=10_000, pool_size=50) -> Answer
+  budget_tokens=10_000, pool_size=50, orient_enabled=True) -> Answer
+  (orient_enabled is the R1 ablation switch, evaluation Q3)
+- build_user_message(query, context_text, history=None, *, guidance="")
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
 from wikirag.config import KnowledgeBase, RetrievalDepth
 from wikirag.llm.client import LLMClient, Usage
 from wikirag.retrieval.assembly import ContextEntry, assemble
+from wikirag.retrieval.orient import Regions, orient
 from wikirag.retrieval.rerank import no_answer, rerank
+from wikirag.retrieval.router import anchors, classify
 from wikirag.retrieval.search import hybrid_search
+from wikirag.retrieval.verify import DEFAULT_MAX_ROUNDS, check_coverage
 
 __all__ = [
     "DEFAULT_BUDGET_TOKENS",
@@ -117,6 +131,9 @@ NO_ANSWER_TEXT = (
 
 _HISTORY_HEADER = "Conversation history (for continuity only, not evidence):"
 _CONTEXT_HEADER = "Knowledge-base context:"
+_GUIDANCE_HEADER = (
+    "How to read this context (guidance for a multi-part question, not a fact):"
+)
 _EMPTY_CONTEXT = "(No knowledge-base context could be assembled for this question.)"
 _PART_SEPARATOR = "\n\n---\n\n"
 
@@ -131,6 +148,11 @@ class Answer:
     no_answer: bool = False
     depth: RetrievalDepth = RetrievalDepth.R1
     context_tokens: int = 0
+    #: The queries actually searched: [query] at R0/R1, plus sub-questions at R2.
+    anchors: list[str] = field(default_factory=list)
+    #: Repair rounds that actually ran (R2 only). Benchmark question Q4 asks
+    #: whether they pay for their extra call, so the count has to be visible.
+    repair_rounds: int = 0
 
 
 def answer(
@@ -142,6 +164,7 @@ def answer(
     history: Sequence[tuple[str, str]] | None = None,
     budget_tokens: int = DEFAULT_BUDGET_TOKENS,
     pool_size: int = DEFAULT_POOL_SIZE,
+    orient_enabled: bool = True,
 ) -> Answer:
     """Retrieve, ground, and generate one reply.
 
@@ -159,22 +182,67 @@ def answer(
     if level is RetrievalDepth.R3:
         raise NotImplementedError("R3 arrives in Wave 5")
 
-    candidates = hybrid_search(kb, [query], k=pool_size)
+    # R2 decomposes first: sub-questions become extra search anchors, fused by
+    # RRF across all of them (docs/retrieval.md). A classifier failure degrades
+    # to the simple path rather than blocking the answer.
+    guidance = ""
+    search_anchors = [query]
+    if level is RetrievalDepth.R2:
+        classification = classify(client, query, history=history)
+        search_anchors = anchors(query, classification)
+        guidance = classification.retrieval_guidance
+
+    # R1+ orients on the gist layer; on an S0 KB this finds nothing and
+    # degrades to an identity boost, which is why it branches on the store's
+    # content and not on the configured S level.
+    regions = (
+        orient(kb, query, enabled=orient_enabled)
+        if level is not RetrievalDepth.R0
+        else Regions()
+    )
+
+    reserved = _reserved_tokens(budget_tokens)
+    context_budget = budget_tokens - reserved
+
+    candidates = regions.boost(hybrid_search(kb, search_anchors, k=pool_size))
     scored = rerank(query, candidates)
-    if no_answer(scored):
+
+    # The absolute no-answer gate belongs to R1+ (D12): R0 is the benchmark
+    # control and answers from whatever it found, however weak.
+    if level is not RetrievalDepth.R0 and no_answer(scored):
         # Logged before returning: a query that found nothing is exactly the
         # signal that tells the KB what it is missing.
         kb.store.log_query(query=query, depth=level.value, no_answer=True)
-        return Answer(text=NO_ANSWER_TEXT, no_answer=True, depth=level)
+        return Answer(
+            text=NO_ANSWER_TEXT,
+            no_answer=True,
+            depth=level,
+            anchors=list(search_anchors),
+        )
 
-    reserved = _reserved_tokens(budget_tokens)
-    context = assemble(kb, scored, budget_tokens - reserved)
+    context = assemble(kb, scored, context_budget)
+
+    # R2's repair loop (CRAG-lite), hard-capped at DEFAULT_MAX_ROUNDS: judge
+    # the assembled evidence, and if it falls short retrieve once more on the
+    # gaps. A failed judge reports ok, so a broken call never costs a round.
+    repair_rounds = 0
+    if level is RetrievalDepth.R2:
+        for _ in range(DEFAULT_MAX_ROUNDS):
+            coverage = check_coverage(client, query, context)
+            if coverage.ok or not coverage.repair_queries:
+                break
+            extra = regions.boost(
+                hybrid_search(kb, coverage.repair_queries, k=pool_size)
+            )
+            scored = rerank(query, _merge_candidates(scored, extra))
+            context = assemble(kb, scored, context_budget)
+            repair_rounds += 1
 
     # Logged before the call, so a provider failure still leaves the trace.
     kb.store.log_query(query=query, depth=level.value, no_answer=False)
     result = client.generate(
         system=GROUNDING_SYSTEM_PROMPT,
-        user=build_user_message(query, context.text, history),
+        user=build_user_message(query, context.text, history, guidance=guidance),
         max_output_tokens=reserved,
     )
     return Answer(
@@ -183,7 +251,17 @@ def answer(
         usage=result.usage,
         depth=level,
         context_tokens=context.token_count,
+        anchors=list(search_anchors),
+        repair_rounds=repair_rounds,
     )
+
+
+def _merge_candidates(first: Sequence[Any], second: Sequence[Any]) -> list[Any]:
+    """Union of two candidate pools, keeping the first occurrence of each owner."""
+    merged: dict[tuple[str, str], Any] = {}
+    for candidate in (*first, *second):
+        merged.setdefault((candidate.owner_kind, candidate.owner_id), candidate)
+    return list(merged.values())
 
 
 def _reserved_tokens(budget_tokens: int) -> int:
@@ -195,8 +273,16 @@ def build_user_message(
     query: str,
     context_text: str,
     history: Sequence[tuple[str, str]] | None = None,
+    *,
+    guidance: str = "",
 ) -> str:
-    """The user turn: windowed history, numbered context, then the question."""
+    """The user turn: windowed history, numbered context, then the question.
+
+    `guidance` is the router's retrieval_guidance for a complex question — a
+    note on how to read the context, never a search parameter and never a
+    fact. It is placed before the question so the context stays the last
+    thing the model reads before answering.
+    """
     parts: list[str] = []
     recent = list(history or ())[-HISTORY_WINDOW:]
     if recent:
@@ -206,5 +292,7 @@ def build_user_message(
         parts.append(f"{_CONTEXT_HEADER}\n\n{context_text}")
     else:
         parts.append(_EMPTY_CONTEXT)
+    if guidance.strip():
+        parts.append(f"{_GUIDANCE_HEADER}\n\n{guidance.strip()}")
     parts.append(f"Question: {query}")
     return _PART_SEPARATOR.join(parts)
