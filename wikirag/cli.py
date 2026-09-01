@@ -63,7 +63,7 @@ PROG = "wikirag"
 #: kb_config key holding the model for the `answer` role (docs/llm.md:
 #: stages reference roles, config maps roles to models).
 ANSWER_MODEL_KEY = "answer_model"
-DEFAULT_ANSWER_MODEL = "gemini-3.5-flash"
+DEFAULT_ANSWER_MODEL = "gemini-3.5-flash-lite"
 ANSWER_ROLE = "answer"
 QUERY_STAGE = "query"
 
