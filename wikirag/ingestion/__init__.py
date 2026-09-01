@@ -22,7 +22,9 @@ Modules:
     enrich    OPEN research area: tagging + contextualization methods
 
 This package also holds the default stage implementations (extract_stage,
-chunk_stage, xrefs_stage, index_stage) and `register_default_stages()`,
+chunk_stage, xrefs_stage, index_stage), `index_notes` (the whole-KB pass
+that makes synthesis output retrievable on the dense channel too) and
+`register_default_stages()`,
 which wires them into the runner's registry. Wiring is explicit — the
 runner's registry stays empty at import time so it remains testable with
 fakes; the CLI (and any integration entry point) calls
@@ -162,6 +164,68 @@ def index_stage(kb: "KnowledgeBase", doc_id: str) -> None:
                 content_hash=text_hash,
             )
     index.save()
+
+
+def index_notes(kb: "KnowledgeBase", *, embedder: Any | None = None) -> int:
+    """Embed notes that have no current vector, and return how many.
+
+    Notes are content (docs/storage.md): a summary or a keyword note is
+    retrievable exactly like a chunk, so it needs both channels. FTS gets
+    them from the store's triggers; the dense channel needs this pass.
+    Notes are written by synthesis rather than by a per-document stage, so
+    this runs over the whole KB instead of hanging off `index_stage`.
+    """
+    from wikirag.llm.embeddings import DEFAULT_EMBEDDING_MODEL
+    from wikirag.storage.vectors import INDEX_FILENAME, VectorIndex
+
+    model = kb.store.config_get(EMBEDDING_MODEL_KEY, DEFAULT_EMBEDDING_MODEL)
+    assert model is not None
+    known = kb.store.embedding_hashes("note", model)
+    todo: list[tuple[str, str, str]] = []
+    for note in _all_notes(kb):
+        note_id = str(note["id"])
+        text = str(note["text"])
+        text_hash = content_hash(text)
+        if known.get(note_id) != text_hash:
+            todo.append((note_id, text, text_hash))
+    if not todo:
+        return 0
+
+    embedder = embedder or _embedder_factory(model)
+    index = VectorIndex.open(kb.vectors_dir, model, embedder.dim)
+    for start in range(0, len(todo), _EMBED_BATCH):
+        batch = todo[start : start + _EMBED_BATCH]
+        vectors = embedder.encode_passages([text for _, text, _ in batch])
+        for (note_id, _, text_hash), vector in zip(batch, vectors):
+            index.upsert(("note", note_id), text_hash, vector)
+            kb.store.upsert_embedding(
+                owner_kind="note",
+                owner_id=note_id,
+                model=model,
+                dim=embedder.dim,
+                vector_ref=INDEX_FILENAME,
+                content_hash=text_hash,
+            )
+    index.save()
+    return len(todo)
+
+
+def _all_notes(kb: "KnowledgeBase") -> list[dict[str, Any]]:
+    """Every note in the store. The store has no list-all API by design;
+    notes are reached by subject, so this walks the subjects."""
+    seen: dict[int, dict[str, Any]] = {}
+    overview = kb.store.get_note(kind="overview")
+    if overview is not None:
+        seen[int(overview["id"])] = overview
+    for document in kb.store.list_documents():
+        note = kb.store.get_note(kind="summary", doc_id=str(document["id"]))
+        if note is not None:
+            seen[int(note["id"])] = note
+    for keyword in kb.store.list_keywords():
+        note = kb.store.get_note(kind="keyword", keyword_id=int(keyword["id"]))
+        if note is not None:
+            seen[int(note["id"])] = note
+    return list(seen.values())
 
 
 def register_default_stages() -> None:

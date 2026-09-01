@@ -432,3 +432,41 @@ def test_empty_context_is_stated_not_faked(
     answer(kb, "q", client=client)
 
     assert "No knowledge-base context" in client.calls[0]["user"]
+
+
+def test_r2_widens_the_budget_for_a_complex_question(
+    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v1 doubled the envelope as well as decomposing; keep the two separable."""
+    pipeline = FakePipeline().install(monkeypatch)
+    pipeline.classification = FakeClassification(is_complex=True, subquestions=["a?"])
+
+    reply = answer(kb, "q", client=make_client(), depth="R2", budget_tokens=10_000)
+
+    assert reply.budget_tokens == 20_000
+    # The context budget follows the widened envelope, minus the answer reserve.
+    assert pipeline.calls["assemble"][0]["budget_tokens"] > 10_000
+
+
+def test_the_widening_can_be_switched_off(
+    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = FakePipeline().install(monkeypatch)
+    pipeline.classification = FakeClassification(is_complex=True, subquestions=["a?"])
+
+    reply = answer(
+        kb, "q", client=make_client(), depth="R2",
+        budget_tokens=10_000, complex_budget_multiplier=1.0,
+    )
+
+    assert reply.budget_tokens == 10_000
+
+
+def test_a_simple_question_keeps_its_budget(
+    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakePipeline().install(monkeypatch)
+
+    reply = answer(kb, "q", client=make_client(), depth="R2", budget_tokens=10_000)
+
+    assert reply.budget_tokens == 10_000

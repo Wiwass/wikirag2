@@ -218,7 +218,7 @@ def _stage_inputs(kb: KnowledgeBase, paths: Sequence[str]) -> int:
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
-    from wikirag.ingestion import register_default_stages
+    from wikirag.ingestion import index_notes, register_default_stages
     from wikirag.ingestion.runner import discover_inbox, run_pending
 
     with open_kb(args.kb) as kb:
@@ -227,6 +227,11 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         added = discover_inbox(kb)
         print(f"inbox: {len(added)} new document(s)")
         report = run_pending(kb)
+        # Synthesis stages write notes; notes are content, so they need the
+        # dense channel too (the store's triggers already handle FTS).
+        indexed = index_notes(kb)
+        if indexed:
+            print(f"indexed {indexed} note(s)")
         for stage in sorted(set(report.done) | set(report.failed) | set(report.skipped)):
             print(
                 f"  {stage:<10} done {report.done[stage]}  "

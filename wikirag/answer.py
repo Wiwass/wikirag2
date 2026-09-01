@@ -67,8 +67,10 @@ Public API
 - class Answer: text, provenance, usage, no_answer, depth,
   context_tokens, anchors, repair_rounds
 - answer(kb, query, *, depth=R1, client, history=None,
-  budget_tokens=10_000, pool_size=50, orient_enabled=True) -> Answer
-  (orient_enabled is the R1 ablation switch, evaluation Q3)
+  budget_tokens=10_000, pool_size=50, orient_enabled=True,
+  complex_budget_multiplier=2.0) -> Answer
+  (orient_enabled is the R1 ablation switch, evaluation Q3;
+   complex_budget_multiplier=1.0 measures decomposition on its own)
 - build_user_message(query, context_text, history=None, *, guidance="")
 """
 
@@ -82,7 +84,12 @@ from wikirag.llm.client import LLMClient, Usage
 from wikirag.retrieval.assembly import ContextEntry, assemble
 from wikirag.retrieval.orient import Regions, orient
 from wikirag.retrieval.rerank import no_answer, rerank
-from wikirag.retrieval.router import anchors, classify
+from wikirag.retrieval.router import (
+    COMPLEX_BUDGET_MULTIPLIER,
+    anchors,
+    classify,
+    effective_budget,
+)
 from wikirag.retrieval.search import hybrid_search
 from wikirag.retrieval.verify import DEFAULT_MAX_ROUNDS, check_coverage
 
@@ -153,6 +160,10 @@ class Answer:
     #: Repair rounds that actually ran (R2 only). Benchmark question Q4 asks
     #: whether they pay for their extra call, so the count has to be visible.
     repair_rounds: int = 0
+    #: The envelope actually used, after R2's complex-question widening. The
+    #: grid compares cells by cost, so a cell that silently spent double has
+    #: to say so.
+    budget_tokens: int = 0
 
 
 def answer(
@@ -165,6 +176,7 @@ def answer(
     budget_tokens: int = DEFAULT_BUDGET_TOKENS,
     pool_size: int = DEFAULT_POOL_SIZE,
     orient_enabled: bool = True,
+    complex_budget_multiplier: float = COMPLEX_BUDGET_MULTIPLIER,
 ) -> Answer:
     """Retrieve, ground, and generate one reply.
 
@@ -191,6 +203,11 @@ def answer(
         classification = classify(client, query, history=history)
         search_anchors = anchors(query, classification)
         guidance = classification.retrieval_guidance
+        # A complex question also gets a wider envelope (v1 did both at once;
+        # the multiplier is a parameter so the benchmark can separate them).
+        budget_tokens = effective_budget(
+            classification, budget_tokens, multiplier=complex_budget_multiplier
+        )
 
     # R1+ orients on the gist layer; on an S0 KB this finds nothing and
     # degrades to an identity boost, which is why it branches on the store's
@@ -218,6 +235,7 @@ def answer(
             no_answer=True,
             depth=level,
             anchors=list(search_anchors),
+            budget_tokens=budget_tokens,
         )
 
     context = assemble(kb, scored, context_budget)
@@ -253,6 +271,7 @@ def answer(
         context_tokens=context.token_count,
         anchors=list(search_anchors),
         repair_rounds=repair_rounds,
+        budget_tokens=budget_tokens,
     )
 
 

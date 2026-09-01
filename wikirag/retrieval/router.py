@@ -43,6 +43,8 @@ Public API
 - classify(client, query, *, history=None, overview_text=None,
   max_attempts=2) -> Classification
 - route_depth(classification, *, default_simple=R1, default_complex=R2)
+- effective_budget(classification, budget_tokens, *, multiplier=2.0)
+- COMPLEX_BUDGET_MULTIPLIER
   -> RetrievalDepth
 - anchors(query, classification) -> list[str]
 """
@@ -266,6 +268,30 @@ def route_depth(
     classifier costs the cheaper depth, never a deeper one.
     """
     return default_complex if classification.is_complex else default_simple
+
+
+#: v1's classifier widened the context envelope for complex questions as well
+#: as decomposing them, and its benchmark never separated the two effects.
+#: Keeping the multiplier explicit is what lets the v2 grid tell them apart.
+COMPLEX_BUDGET_MULTIPLIER = 2.0
+
+
+def effective_budget(
+    classification: Classification,
+    budget_tokens: int,
+    *,
+    multiplier: float = COMPLEX_BUDGET_MULTIPLIER,
+) -> int:
+    """The context envelope this question deserves.
+
+    A complex question is one whose answer has to hold several things at
+    once, so it gets a wider envelope; a simple one keeps the budget it was
+    given. `multiplier=1.0` disables the widening, which is how the
+    benchmark measures decomposition without it (evaluation Q4).
+    """
+    if not classification.is_complex:
+        return budget_tokens
+    return max(budget_tokens, int(budget_tokens * multiplier))
 
 
 def anchors(query: str, classification: Classification) -> list[str]:
