@@ -8,9 +8,11 @@ Commands
   wikirag forget <kb> <doc_id>
   wikirag query <kb> "..." [--depth R0..R3] [--budget N] [--fake]
   wikirag costs <kb> [--by stage,role,model]
+  wikirag eval <kb> [--depths R0,R1] [--budgets 2500,10000] [--out DIR]
+                    [--dataset PATH] [--compare BASELINE] [--fake]
 
 Later waves add the rest of the planned surface (chat, export-vault,
-consolidate, eval); they arrive with the modules they drive, not before.
+consolidate); they arrive with the modules they drive, not before.
 
 No business logic here (v1 lesson: cli.py accumulated orchestration that
 belonged to the pipeline). Every command opens the KB in exactly one place
@@ -90,6 +92,36 @@ def _answer_client(kb: KnowledgeBase, *, fake: bool = False) -> LLMClient:
         assert model is not None
         inner = GeminiClient(model)
     return MeteredClient(inner, store=kb.store, stage=QUERY_STAGE, role=ANSWER_ROLE)
+
+
+#: kb_config key holding the model for the `judge` role. The judge is pinned
+#: per dataset version (docs/evaluation.md): changing it invalidates every
+#: cross-run comparison, so it is configured per KB, never inferred.
+JUDGE_MODEL_KEY = "judge_model"
+DEFAULT_JUDGE_MODEL = "gemini-3.5-flash-lite"
+JUDGE_ROLE = "judge"
+EVAL_STAGE = "eval"
+
+#: A schema-valid zero judgment, so `eval --fake` exercises the whole grid
+#: (answer -> judge -> report) without a provider.
+FAKE_JUDGE_JSON = (
+    '{"correctness": 0, "completeness": 0, "groundedness": 0,'
+    ' "rationale": "(--fake: no judge model was called.)"}'
+)
+
+
+def _judge_client(kb: KnowledgeBase, *, fake: bool = False) -> LLMClient:
+    """The metered client for the `judge` role of this KB."""
+    inner: LLMClient
+    if fake:
+        inner = FakeLLMClient(LLMResult(text=FAKE_JUDGE_JSON), model="fake-judge")
+    else:
+        from wikirag.llm.gemini import GeminiClient
+
+        model = kb.store.config_get(JUDGE_MODEL_KEY, DEFAULT_JUDGE_MODEL)
+        assert model is not None
+        inner = GeminiClient(model)
+    return MeteredClient(inner, store=kb.store, stage=EVAL_STAGE, role=JUDGE_ROLE)
 
 
 def _warn(message: str) -> None:
@@ -267,6 +299,83 @@ def _cmd_costs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_eval(args: argparse.Namespace) -> int:
+    from datetime import datetime
+
+    from wikirag.eval.harness import compare, load_dataset, run_grid, write_report
+
+    dataset = Path(args.dataset) if args.dataset else Path("benchmarks") / args.kb / "dataset.json"
+    questions = load_dataset(dataset)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    out_dir = Path(args.out) if args.out else dataset.parent / "runs" / f"grid_{stamp}"
+
+    with open_kb(args.kb) as kb:
+        report = run_grid(
+            kb,
+            questions,
+            client=_answer_client(kb, fake=args.fake),
+            judge_client=_judge_client(kb, fake=args.fake),
+            depths=[d.strip() for d in args.depths.split(",") if d.strip()],
+            budgets=[int(b) for b in args.budgets.split(",") if b.strip()],
+            out_dir=out_dir,
+            resume=not args.no_resume,
+            dataset_path=dataset,
+            corpus=args.corpus,
+        )
+
+    print(f"{report.kb} [{report.synthesis_level}] -> {report.out_dir}")
+    print(
+        _table(
+            [
+                {
+                    "depth": cell["depth"],
+                    "budget": cell["budget_tokens"],
+                    "status": cell["status"],
+                    "judged": f"{cell['judged']}/{cell['n']}",
+                    "score": "—" if cell["mean_total"] is None else f"{cell['mean_total']:.1f}",
+                    "sem": "—" if cell["sem_total"] is None else f"±{cell['sem_total']:.1f}",
+                    "cost": "—" if cell["cost"] is None else f"${cell['cost']:.4f}",
+                }
+                for cell in report.rows()
+            ],
+            ["depth", "budget", "status", "judged", "score", "sem", "cost"],
+        )
+    )
+    print(f"report: {write_report(report.out_dir)}")
+
+    if args.compare:
+        for cell in report.completed():
+            print(f"\nvs baseline — {cell.artifact}")
+            rows = compare(args.compare, report.out_dir / cell.artifact)
+            print(
+                _table(
+                    [
+                        {
+                            "subset": row["subset"],
+                            "baseline": f"{row['baseline_mean']:.1f}"
+                            if row["baseline_mean"] is not None
+                            else "—",
+                            "run": f"{row['run_mean']:.1f}"
+                            if row["run_mean"] is not None
+                            else "—",
+                            "delta": f"{row['delta']:+.1f}" if row["delta"] is not None else "—",
+                            "delta_sem": f"±{row['delta_sem']:.1f}"
+                            if row["delta_sem"] is not None
+                            else "—",
+                            "verdict": row["verdict"],
+                        }
+                        for row in rows
+                    ],
+                    ["subset", "baseline", "run", "delta", "delta_sem", "verdict"],
+                )
+            )
+
+    if report.aborted:
+        print(f"stopped early ({report.aborted}); rerun to resume", file=sys.stderr)
+        return 1
+    return 0
+
+
 # ---------------------------------------------------------------------- parser
 
 
@@ -328,6 +437,37 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"comma-separated grouping fields from {','.join(GROUP_FIELDS)}",
     )
     costs.set_defaults(func=_cmd_costs)
+
+    # Imported here, and not at module scope, so that only `eval` pays for the
+    # harness (and so the two default axes have exactly one definition).
+    from wikirag.eval.harness import DEFAULT_BUDGETS as EVAL_DEFAULT_BUDGETS
+    from wikirag.eval.harness import DEFAULT_DEPTHS as EVAL_DEFAULT_DEPTHS
+
+    evaluate = subcommands.add_parser("eval", help="run the depth x budget benchmark grid")
+    evaluate.add_argument("kb")
+    evaluate.add_argument(
+        "--depths",
+        default=",".join(d.value for d in EVAL_DEFAULT_DEPTHS),
+        help="comma-separated retrieval depths (default: %(default)s)",
+    )
+    evaluate.add_argument(
+        "--budgets",
+        default=",".join(str(b) for b in EVAL_DEFAULT_BUDGETS),
+        help="comma-separated token budgets (default: %(default)s)",
+    )
+    evaluate.add_argument("--out", help="run directory (default: <dataset dir>/runs/grid_<ts>)")
+    evaluate.add_argument("--dataset", help="gold dataset (default: benchmarks/<kb>/dataset.json)")
+    evaluate.add_argument("--compare", help="frozen baseline run dir or artifact to diff against")
+    evaluate.add_argument(
+        "--corpus", default="", help="one-line corpus description for the manifest"
+    )
+    evaluate.add_argument(
+        "--no-resume", action="store_true", help="re-run every cell, even completed ones"
+    )
+    evaluate.add_argument(
+        "--fake", action="store_true", help="run the grid with the offline fake clients"
+    )
+    evaluate.set_defaults(func=_cmd_eval)
 
     return parser
 

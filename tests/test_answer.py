@@ -25,6 +25,7 @@ from wikirag.answer import (
 )
 from wikirag.config import KnowledgeBase, RetrievalDepth, create_kb
 from wikirag.llm.client import FakeLLMClient, LLMResult, Usage
+from wikirag.retrieval.verify import DEFAULT_MAX_ROUNDS
 
 
 @pytest.fixture()
@@ -70,6 +71,37 @@ class FakeContext:
     token_count: int = 42
 
 
+@dataclass
+class FakeRegions:
+    """The orient.Regions shape: an identity boost, as on an S0 KB."""
+
+    def is_empty(self) -> bool:
+        return True
+
+    def boost(self, candidates: Any) -> list[Any]:
+        return list(candidates)
+
+
+@dataclass
+class FakeClassification:
+    """The router.Classification shape."""
+
+    is_complex: bool = False
+    subquestions: list[str] = field(default_factory=list)
+    retrieval_guidance: str = ""
+    fallback: bool = False
+
+
+@dataclass
+class FakeCoverage:
+    """The verify.Coverage shape."""
+
+    ok: bool = True
+    missing_aspects: list[str] = field(default_factory=list)
+    repair_queries: list[str] = field(default_factory=list)
+    fallback: bool = False
+
+
 class FakePipeline:
     """Records every stage call and returns scripted results."""
 
@@ -88,14 +120,41 @@ class FakePipeline:
             "rerank": [],
             "no_answer": [],
             "assemble": [],
+            "orient": [],
+            "classify": [],
+            "check_coverage": [],
         }
+        #: scripted Wave-3 stage results; overwritten per test
+        self.classification = FakeClassification()
+        self.coverages: list[FakeCoverage] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> "FakePipeline":
         monkeypatch.setattr(answer_module, "hybrid_search", self.hybrid_search)
         monkeypatch.setattr(answer_module, "rerank", self.rerank)
         monkeypatch.setattr(answer_module, "no_answer", self.no_answer)
         monkeypatch.setattr(answer_module, "assemble", self.assemble)
+        monkeypatch.setattr(answer_module, "orient", self.orient)
+        monkeypatch.setattr(answer_module, "classify", self.classify)
+        monkeypatch.setattr(answer_module, "check_coverage", self.check_coverage)
+        monkeypatch.setattr(answer_module, "anchors", self.anchors)
         return self
+
+    def anchors(self, query: str, classification: Any) -> list[str]:
+        return [query, *classification.subquestions]
+
+    def orient(self, kb: Any, query: str, *, enabled: bool = True) -> "FakeRegions":
+        self.calls["orient"].append({"query": query, "enabled": enabled})
+        return FakeRegions()
+
+    def classify(self, client: Any, query: str, **kwargs: Any) -> "FakeClassification":
+        self.calls["classify"].append({"query": query})
+        return self.classification
+
+    def check_coverage(self, client: Any, query: str, context: Any, **kwargs: Any) -> "FakeCoverage":
+        self.calls["check_coverage"].append({"query": query})
+        if self.coverages:
+            return self.coverages.pop(0)
+        return FakeCoverage(ok=True)
 
     def hybrid_search(self, kb: Any, queries: Any, k: int = 50, **kwargs: Any) -> list[FakeCandidate]:
         self.calls["hybrid_search"].append({"queries": list(queries), "k": k})
@@ -234,18 +293,110 @@ def test_small_budget_still_retrieves(
     assert pipeline.calls["assemble"][0]["budget_tokens"] == 800
 
 
-@pytest.mark.parametrize("depth", ["R0", "R1", "R2"])
-def test_r0_r1_r2_share_the_same_path_for_now(
-    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch, depth: str
+def test_r0_skips_orientation_and_the_no_answer_gate(
+    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pipeline = FakePipeline().install(monkeypatch)
+    """R0 is the benchmark control: it answers from whatever it found."""
+    pipeline = FakePipeline(no_answer=True).install(monkeypatch)
     client = make_client()
 
-    reply = answer(kb, "q", client=client, depth=depth)
+    reply = answer(kb, "q", client=client, depth="R0")
 
-    assert reply.depth is RetrievalDepth.parse(depth)
+    assert reply.no_answer is False  # the gate belongs to R1+
+    assert pipeline.calls["orient"] == []
+    assert pipeline.calls["classify"] == []
+    assert pipeline.calls["check_coverage"] == []
     assert len(client.calls) == 1
-    assert len(pipeline.calls["assemble"]) == 1
+
+
+def test_r1_orients_and_applies_the_gate(
+    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = FakePipeline(no_answer=True).install(monkeypatch)
+
+    reply = answer(kb, "q", client=make_client(), depth="R1")
+
+    assert reply.no_answer is True
+    assert pipeline.calls["orient"] == [{"query": "q", "enabled": True}]
+    assert pipeline.calls["classify"] == []  # decomposition is R2
+
+
+def test_orientation_can_be_ablated(
+    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """evaluation.md Q3: orientation must be switchable off for the ablation."""
+    pipeline = FakePipeline().install(monkeypatch)
+
+    answer(kb, "q", client=make_client(), depth="R1", orient_enabled=False)
+
+    assert pipeline.calls["orient"] == [{"query": "q", "enabled": False}]
+
+
+def test_r2_searches_subquestions_as_extra_anchors(
+    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = FakePipeline().install(monkeypatch)
+    pipeline.classification = FakeClassification(
+        is_complex=True,
+        subquestions=["what is vis?", "how is it gathered?"],
+        retrieval_guidance="Compare the two chapters.",
+    )
+
+    client = make_client()
+    reply = answer(kb, "q", client=client, depth="R2")
+
+    assert pipeline.calls["hybrid_search"][0]["queries"] == [
+        "q",
+        "what is vis?",
+        "how is it gathered?",
+    ]
+    assert reply.anchors == ["q", "what is vis?", "how is it gathered?"]
+    # The guidance reaches the answering model, marked as guidance not fact.
+    assert "Compare the two chapters." in client.calls[-1]["user"]
+
+
+def test_r2_repairs_once_when_coverage_falls_short(
+    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = FakePipeline().install(monkeypatch)
+    pipeline.coverages = [
+        FakeCoverage(ok=False, missing_aspects=["cost"], repair_queries=["vis cost"]),
+        FakeCoverage(ok=True),
+    ]
+
+    reply = answer(kb, "q", client=make_client(), depth="R2")
+
+    assert reply.repair_rounds == 1
+    # One extra retrieval round on the judge's queries, and a re-assembly.
+    assert [c["queries"] for c in pipeline.calls["hybrid_search"]] == [["q"], ["vis cost"]]
+    assert len(pipeline.calls["assemble"]) == 2
+
+
+def test_r2_repair_is_hard_capped(
+    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A judge that is never satisfied must not loop: the cap is the contract."""
+    pipeline = FakePipeline().install(monkeypatch)
+    pipeline.coverages = [
+        FakeCoverage(ok=False, repair_queries=[f"q{i}"]) for i in range(5)
+    ]
+
+    reply = answer(kb, "q", client=make_client(), depth="R2")
+
+    assert reply.repair_rounds == DEFAULT_MAX_ROUNDS == 1
+    assert len(pipeline.calls["check_coverage"]) == 1
+
+
+def test_r2_does_not_repair_when_coverage_is_ok(
+    kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = FakePipeline().install(monkeypatch)
+    pipeline.coverages = [FakeCoverage(ok=True)]
+
+    reply = answer(kb, "q", client=make_client(), depth="R2")
+
+    assert reply.repair_rounds == 0
+    assert len(pipeline.calls["hybrid_search"]) == 1
 
 
 def test_r3_is_not_implemented(kb: KnowledgeBase, monkeypatch: pytest.MonkeyPatch) -> None:
