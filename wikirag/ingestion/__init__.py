@@ -172,3 +172,10 @@ def register_default_stages() -> None:
     runner.register_stage("chunk", chunk_stage)
     runner.register_stage("xrefs", xrefs_stage)
     runner.register_stage("index", index_stage)
+    # S1+ / S2+ stages. Imported here rather than at module import so an S0
+    # ingest never pulls in the synthesis layer.
+    from wikirag.ingestion.enrich import enrich_stage
+    from wikirag.synthesis.summaries import summarize_stage
+
+    runner.register_stage("summarize", summarize_stage)
+    runner.register_stage("enrich", enrich_stage)
