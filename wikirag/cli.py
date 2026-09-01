@@ -7,12 +7,13 @@ Commands
   wikirag set-level <kb> <S0..S3>         # raise/lower synthesis level
   wikirag forget <kb> <doc_id>
   wikirag query <kb> "..." [--depth R0..R3] [--budget N] [--fake]
+  wikirag export-vault <kb> [--clean]      # render vault/ from the store
   wikirag costs <kb> [--by stage,role,model]
   wikirag eval <kb> [--depths R0,R1] [--budgets 2500,10000] [--out DIR]
                     [--dataset PATH] [--compare BASELINE] [--fake]
 
-Later waves add the rest of the planned surface (chat, export-vault,
-consolidate); they arrive with the modules they drive, not before.
+Later waves add the rest of the planned surface (chat, consolidate);
+they arrive with the modules they drive, not before.
 
 No business logic here (v1 lesson: cli.py accumulated orchestration that
 belonged to the pipeline). Every command opens the KB in exactly one place
@@ -250,6 +251,20 @@ def _cmd_set_level(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export_vault(args: argparse.Namespace) -> int:
+    """Render the markdown vault from the store (a regenerable view)."""
+    from wikirag.storage.vault import export_vault
+
+    with open_kb(args.kb) as kb:
+        report = export_vault(kb, clean=args.clean)
+        print(f"vault: {report.vault_dir}")
+        print(
+            f"  written {len(report.written)}  updated {len(report.updated)}  "
+            f"unchanged {len(report.unchanged)}  removed {len(report.removed)}"
+        )
+    return 0
+
+
 def _cmd_forget(args: argparse.Namespace) -> int:
     with open_kb(args.kb) as kb:
         if not kb.store.forget_document(args.doc_id):
@@ -407,6 +422,17 @@ def build_parser() -> argparse.ArgumentParser:
     forget.add_argument("kb")
     forget.add_argument("doc_id")
     forget.set_defaults(func=_cmd_forget)
+
+    export_vault_cmd = subcommands.add_parser(
+        "export-vault", help="render the markdown vault from the store"
+    )
+    export_vault_cmd.add_argument("kb")
+    export_vault_cmd.add_argument(
+        "--clean",
+        action="store_true",
+        help="also remove vault files with nothing behind them in the store",
+    )
+    export_vault_cmd.set_defaults(func=_cmd_export_vault)
 
     query = subcommands.add_parser("query", help="ask one question")
     query.add_argument("kb")
