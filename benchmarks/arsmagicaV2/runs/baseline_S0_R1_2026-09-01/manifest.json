@@ -1,0 +1,14 @@
+{
+  "run_id": "baseline_S0_R1_2026-09-01",
+  "kb": "arsmagica-sample",
+  "corpus": "5 of the arsmagicaV2 PDFs (the ones the 30 gold questions cite)",
+  "synthesis_level": "S0",
+  "depth": "R1 (equals R0 until Wave 3 lands orientation)",
+  "budget_tokens": 10000,
+  "pool_size": 50,
+  "answer_model": "gemini-3.5-flash",
+  "judge_model": "gemini-3.5-flash-lite",
+  "embedding_model": "BAAI/bge-m3",
+  "reranker_model": "BAAI/bge-reranker-v2-m3",
+  "note": "Checkpoint A baseline. Answer model is flash because flash-lite was chosen after this run; flash later hit its free-tier quota. Judge differs from v1's gemini-3.1-flash-lite, so cross-run comparison with v1 carries a judge caveat (docs/evaluation.md)."
+}
