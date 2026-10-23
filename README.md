@@ -16,14 +16,15 @@ Implemented by waves (see [docs/implementation.md](docs/implementation.md)); the
 | Storage (SQLite store, vector index, vault export), LLM layer (Gemini client, cost metering, local embedder and reranker) | done |
 | PDF extraction, deterministic chunking, cross-references, resumable ingest runner | done |
 | Retrieval floor `R0`: hybrid search, RRF, cross-encoder rerank, context assembly; CLI | done |
-| Depth `R1`/`R2`: orientation, query router, verify-and-repair loop | done |
-| Synthesis `S1`-`S3`: summaries, lazy keyword notes, consolidation, atlas; markdown vault | done |
+| Depth `R1`/`R2`: orientation, question decomposition, verify-and-repair loop | done (depth auto-routing exists in `router.py` but is not wired: `--depth` defaults to `R1`) |
+| Synthesis at ingest: `S1` summaries, `S2` keyword tagging; markdown vault export | done |
+| Synthesis after ingest: lazy keyword notes, consolidation, atlas (`S2`-`S3`) | implemented and unit-tested, **not wired yet**: no CLI command runs them and `R2` does not queue consolidation yet |
 | Evaluation harness (blind judge, depth × budget grid) | done |
 | **Checkpoint A**: `S0` baseline measured on a 5-book sample (30 gold questions) | done, results in `benchmarks/` |
 | **Checkpoint B**: `S × R` grid against the baseline | prepared, not run yet |
 | `R3` agentic retrieval, graph channel (`retrieval/graph.py`) | not implemented (`R3` raises `NotImplementedError`) |
 
-What is measured so far is small: on the 30-question gold set at a 10k-token budget, `R0` scores 18.8 and `R2` scores 19.9 out of 30 (answer and judge model `gemini-3.5-flash-lite`, standard error about ±1.8), which is a difference inside the noise. Most standing questions in [docs/evaluation.md](docs/evaluation.md) are still open; see `benchmarks/arsmagicaV2/runs/*/summary.md`. The source PDFs of the benchmark corpus (a commercial RPG library) are not included in this repository.
+What is measured so far is small: on the 30-question gold set at a 10k-token budget, `R0` scores 18.8 and `R2` scores 19.9 out of 30 (answer and judge model `gemini-3.5-flash-lite`, standard error about ±1.8), which is a difference inside the noise. All six standing questions in [docs/evaluation.md](docs/evaluation.md) are still open; see `benchmarks/arsmagicaV2/runs/*/summary.md`. The source PDFs of the benchmark corpus (a commercial RPG library) are not included in this repository.
 
 Knowledge bases from v1 are not migrated; there is deliberately no backwards compatibility.
 
@@ -37,10 +38,11 @@ export GEMINI_API_KEY=...             # or a directory of keys via WIKIRAG_KEYS_
 export WIKIRAG_HOME=~/wikirag-kbs     # optional; default is ./knowledge_bases
 
 wikirag kb create books
+wikirag set-level books S1            # optional, default S0; on an existing KB it only queues jobs,
+                                      # so run `wikirag ingest books` again afterwards
 wikirag ingest books path/to/*.pdf    # resumable: rerun it after an interruption
-wikirag set-level books S2            # optional: how much synthesis the KB gets (S0-S3)
 wikirag query books "How does X relate to Y?" --depth R1 --budget 10000
-wikirag export-vault books            # markdown vault with [[wikilinks]] for Obsidian
+wikirag export-vault books            # markdown view of the store, for Obsidian
 wikirag costs books --by stage,model  # what each stage cost
 wikirag eval books                    # depth × budget grid; needs benchmarks/books/dataset.json
 
@@ -136,7 +138,7 @@ Ingestion **methods** are a research area, not a fixed design. The stage *contra
 
 1. **Plan** (done): structure, contracts, decisions.
 2. **Skeleton** (done): package layout with per-module specs as docstrings.
-3. **Implementation by waves** (Waves 0-4 done): see [docs/implementation.md](docs/implementation.md) — foundations → ingest floor → retrieval floor (**Checkpoint A**: measured S0 baseline, done) → depth (R1/R2) → synthesis (lazy S1–S3) + vault.
-4. **Checkpoint B** (next): run the `S × R` grid against the Checkpoint A baseline and answer the standing questions in [docs/evaluation.md](docs/evaluation.md); weak channels (orientation, graph expansion) live or die there.
+3. **Implementation by waves** (Waves 0-4 implemented; post-ingest synthesis not wired yet, see Status): see [docs/implementation.md](docs/implementation.md) — foundations → ingest floor → retrieval floor (**Checkpoint A**: measured S0 baseline, done) → depth (R1/R2) → synthesis (lazy S1–S3) + vault.
+4. **Checkpoint B** (next): wire consolidation and the atlas (a `consolidate` command, the `R2` trigger) so `S2`/`S3` knowledge bases can be built, then run the `S × R` grid against the Checkpoint A baseline and answer the standing questions in [docs/evaluation.md](docs/evaluation.md); weak channels (orientation, graph expansion) live or die there.
 5. **Wave 5**: agentic retrieval (`R3`), and the graph channel only if Checkpoint B keeps it.
 6. Continuous: ingest-method research measured against the floor.
