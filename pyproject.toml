@@ -3,6 +3,8 @@ name = "wikirag"
 version = "0.0.1"
 description = "Personal knowledge engine: retrieval index + readable wiki vault, both on sliders."
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 # Dependencies are added as modules get implemented (see docs/ for planned stack:
 # sqlite (stdlib), sentence-transformers, rapidfuzz->removed, google-genai, pymupdf, ...)
 dependencies = [
@@ -20,7 +22,7 @@ dev = ["pytest"]
 wikirag = "wikirag.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
