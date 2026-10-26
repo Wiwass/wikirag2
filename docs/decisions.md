@@ -40,7 +40,7 @@ Motivated by the graphs-vs-agents discussion (Cursor-style "no graphs for coding
 
 ## 2026-08-30 — Plan established
 
-**D9. Plan-only repo first.** The repo starts as documentation; implementation follows the roadmap in README. Keeps the design reviewable before code exists.
+**D9. Plan-only repo first.** The repo starts as documentation; implementation follows the roadmap (now in [status.md](status.md)). Keeps the design reviewable before code exists.
 
 **D8. No backwards compatibility with v1.** All KBs will be re-ingested from scratch. Frees the schema and pipeline from v1's data layout entirely. (v1 stays untouched as reference and as the source of the benchmark harness.)
 

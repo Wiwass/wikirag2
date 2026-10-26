@@ -1,6 +1,6 @@
 # Evaluation
 
-The v1 benchmark harness is the most valuable thing v1 built and the reason v2's design is evidence-based. It gets ported early (roadmap step 3) and becomes the gate for every architectural claim.
+The v1 benchmark harness is the most valuable thing v1 built and the reason v2's design is evidence-based. It gets ported early (roadmap step 3 in [status.md](status.md)) and becomes the gate for every architectural claim.
 
 ## What carries over from v1
 

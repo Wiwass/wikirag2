@@ -7,28 +7,7 @@ A personal knowledge engine that turns document libraries (PDF-first) into two d
 
 The defining idea of v2 is that **both products sit on sliders**. How much synthesis a knowledge base gets at ingestion, and how deep retrieval digs at query time, are tunable parameters, not hardwired pipeline choices.
 
-## Status
-
-Implemented by waves (see [docs/implementation.md](docs/implementation.md)); the offline test suite passes (542 passed, 14 skipped in a fresh clone: the skipped tests load real models, run a scale benchmark, or read benchmark files that are not public).
-
-| Part | State |
-|---|---|
-| Storage (SQLite store, vector index, vault export), LLM layer (Gemini client, cost metering, local embedder and reranker) | done |
-| PDF extraction, deterministic chunking, cross-references, resumable ingest runner | done |
-| Retrieval floor `R0`: hybrid search, RRF, cross-encoder rerank, context assembly; CLI | done |
-| Depth `R1`/`R2`: orientation, question decomposition, verify-and-repair loop | done (depth auto-routing exists in `router.py` but is not wired: `--depth` defaults to `R1`) |
-| Synthesis at ingest: `S1` summaries, `S2` keyword tagging; markdown vault export | done |
-| Synthesis after ingest: lazy keyword notes, consolidation, atlas (`S2`-`S3`) | implemented and unit-tested, **not wired yet**: no CLI command runs them and `R2` does not queue consolidation yet |
-| Evaluation harness (blind judge, depth × budget grid) | done |
-| **Checkpoint A**: `S0` baseline measured on a 5-book sample (30 gold questions) | done, results in `benchmarks/` |
-| **Checkpoint B**: `S × R` grid against the baseline | prepared, not run yet |
-| `R3` agentic retrieval, graph channel (`retrieval/graph.py`) | not implemented (`R3` raises `NotImplementedError`) |
-
-What is measured so far is small: on the 30-question gold set at a 10k-token budget, `R0` scores 18.8 and `R2` scores 19.9 out of 30 (answer and judge model `gemini-3.5-flash-lite`, standard error about ±1.8), which is a difference inside the noise. All six standing questions in [docs/evaluation.md](docs/evaluation.md) are still open; see `benchmarks/arsmagicaV2/runs/*/summary.md`. The benchmark corpus is a commercial RPG library: its PDFs are not in this repository, and neither are the gold questions and recorded answers, which quote it. [benchmarks/README.md](benchmarks/README.md) describes the gold-set format, so the harness runs on any corpus.
-
-Knowledge bases from v1 are not migrated; there is deliberately no backwards compatibility.
-
-**How it was built.** The design in `docs/` was worked out together with Claude, and the code was written with Claude Code: an orchestrator session ran each wave of [docs/implementation.md](docs/implementation.md) through subagents, then integrated it and got the test suite green before committing. Commits name the model that co-wrote them.
+Ingestion, hybrid retrieval with reranking, depths `R0`-`R2`, summaries and tagging at ingest, the vault export and the evaluation harness are implemented and tested; post-ingest consolidation (`S2`-`S3`) and agentic retrieval (`R3`) are still in progress ([docs/status.md](docs/status.md)).
 
 ## Quick start
 
@@ -106,6 +85,7 @@ Levels degrade gracefully: any R works on any S (deeper R simply has fewer struc
 wikirag2/
 ├── README.md                  # this file — master overview
 ├── docs/
+│   ├── status.md              # what is implemented and measured, roadmap
 │   ├── v1-and-why-v2.md       # what v1 was, what it measured, why v2 exists
 │   ├── architecture.md        # memory model, components, data flow, contracts
 │   ├── storage.md             # SQLite schema draft, vault-as-view, ID scheme
@@ -136,14 +116,9 @@ wikirag2/
 
 Ingestion **methods** are a research area, not a fixed design. The stage *contracts* (what goes in, what comes out, what IDs mean) are fixed in [docs/ingestion.md](docs/ingestion.md); the *implementations* sit behind a method registry with an explicit goal: **much better cost/performance than v1**. The first method (tagging from an embedding-shortlisted candidate list) is implemented; other candidates (contextual retrieval, LazyGraphRAG-style deferral, ColPali-style visual indexing, local small-model enrichment) and their evaluation criteria are listed in that document.
 
-## Roadmap
+## How it was built
 
-1. **Plan** (done): structure, contracts, decisions.
-2. **Skeleton** (done): package layout with per-module specs as docstrings.
-3. **Implementation by waves** (Waves 0-4 implemented; post-ingest synthesis not wired yet, see Status): see [docs/implementation.md](docs/implementation.md) — foundations → ingest floor → retrieval floor (**Checkpoint A**: measured S0 baseline, done) → depth (R1/R2) → synthesis (lazy S1–S3) + vault.
-4. **Checkpoint B** (next): wire consolidation and the atlas (a `consolidate` command, the `R2` trigger) so `S2`/`S3` knowledge bases can be built, then run the `S × R` grid against the Checkpoint A baseline and answer the standing questions in [docs/evaluation.md](docs/evaluation.md); weak channels (orientation, graph expansion) live or die there.
-5. **Wave 5**: agentic retrieval (`R3`), and the graph channel only if Checkpoint B keeps it.
-6. Continuous: ingest-method research measured against the floor.
+The design in `docs/` was worked out together with Claude, and the code was written with Claude Code: an orchestrator session ran each wave of [docs/implementation.md](docs/implementation.md) through subagents, then integrated it and got the test suite green before committing. Commits name the model that co-wrote them.
 
 ## License
 
