@@ -6,3 +6,6 @@ knowledge_bases/
 .pytest_cache/
 *.egg-info/
 .venv/
+# Benchmark files that quote the corpus stay local (benchmarks/README.md)
+benchmarks/*/dataset.json
+benchmarks/*/runs/*/answers_*.json

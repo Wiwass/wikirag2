@@ -9,7 +9,7 @@ The defining idea of v2 is that **both products sit on sliders**. How much synth
 
 ## Status
 
-Implemented by waves (see [docs/implementation.md](docs/implementation.md)); the offline test suite passes (546 passed, 10 skipped: the skipped ones need model downloads).
+Implemented by waves (see [docs/implementation.md](docs/implementation.md)); the offline test suite passes (542 passed, 14 skipped in a fresh clone: the skipped tests load real models, run a scale benchmark, or read benchmark files that are not public).
 
 | Part | State |
 |---|---|
@@ -24,9 +24,11 @@ Implemented by waves (see [docs/implementation.md](docs/implementation.md)); the
 | **Checkpoint B**: `S × R` grid against the baseline | prepared, not run yet |
 | `R3` agentic retrieval, graph channel (`retrieval/graph.py`) | not implemented (`R3` raises `NotImplementedError`) |
 
-What is measured so far is small: on the 30-question gold set at a 10k-token budget, `R0` scores 18.8 and `R2` scores 19.9 out of 30 (answer and judge model `gemini-3.5-flash-lite`, standard error about ±1.8), which is a difference inside the noise. All six standing questions in [docs/evaluation.md](docs/evaluation.md) are still open; see `benchmarks/arsmagicaV2/runs/*/summary.md`. The source PDFs of the benchmark corpus (a commercial RPG library) are not included in this repository.
+What is measured so far is small: on the 30-question gold set at a 10k-token budget, `R0` scores 18.8 and `R2` scores 19.9 out of 30 (answer and judge model `gemini-3.5-flash-lite`, standard error about ±1.8), which is a difference inside the noise. All six standing questions in [docs/evaluation.md](docs/evaluation.md) are still open; see `benchmarks/arsmagicaV2/runs/*/summary.md`. The benchmark corpus is a commercial RPG library: its PDFs are not in this repository, and neither are the gold questions and recorded answers, which quote it. [benchmarks/README.md](benchmarks/README.md) describes the gold-set format, so the harness runs on any corpus.
 
 Knowledge bases from v1 are not migrated; there is deliberately no backwards compatibility.
+
+**How it was built.** The design in `docs/` was worked out together with Claude, and the code was written with Claude Code: an orchestrator session ran each wave of [docs/implementation.md](docs/implementation.md) through subagents, then integrated it and got the test suite green before committing. Commits name the model that co-wrote them.
 
 ## Quick start
 
@@ -51,7 +53,7 @@ pytest                                # offline tests, no network, no model down
 
 ## Why a rewrite (lessons from v1)
 
-WikiRAG v1 ([WikiRAG repo](https://github.com/Wiwass/WikiRAG)) worked, and its benchmark harness produced the key insight that motivates v2:
+WikiRAG v1 (a separate, private repository) worked, and its benchmark harness produced the key insight that motivates v2:
 
 - The expensive keyword pipeline (LLM summarize → filter → verbatim extract → synthesize) had no advantage over cheaper tiers beyond noise at realistic budgets (10k–20k tokens). Its apparent gain over plain raw-window retrieval at small budgets came largely from the query classifier doubling the budget on complex questions.
 - Asking the LLM to **echo verbatim text** (v1 Phase C) caused most of the system's incidental complexity: JSON escaping failures, repair heuristics, retry machinery, duplicated text requiring dedup at retrieval.
@@ -126,7 +128,7 @@ wikirag2/
 │   ├── retrieval/             # search, rerank, orient, router, graph, verify, assembly
 │   ├── agent/                 # loop.py: R3 agentic navigation
 │   └── eval/                  # harness.py: benchmark grid + blind judge
-├── benchmarks/                # gold dataset and recorded runs (summary.md per run)
+├── benchmarks/                # run manifests and summaries; gold sets stay local (README.md)
 └── tests/
 ```
 
@@ -142,3 +144,7 @@ Ingestion **methods** are a research area, not a fixed design. The stage *contra
 4. **Checkpoint B** (next): wire consolidation and the atlas (a `consolidate` command, the `R2` trigger) so `S2`/`S3` knowledge bases can be built, then run the `S × R` grid against the Checkpoint A baseline and answer the standing questions in [docs/evaluation.md](docs/evaluation.md); weak channels (orientation, graph expansion) live or die there.
 5. **Wave 5**: agentic retrieval (`R3`), and the graph channel only if Checkpoint B keeps it.
 6. Continuous: ingest-method research measured against the floor.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
