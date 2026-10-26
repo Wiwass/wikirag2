@@ -1,6 +1,6 @@
 # WikiRAG v1 and why v2 exists
 
-This note is self-contained: it describes what WikiRAG v1 was, what it measured, and which of its problems v2 is built to remove. v1 lives in its own repository, [Wiwass/WikiRAG](https://github.com/Wiwass/WikiRAG) (branch `master` is the reference; `branch-di-presentazione` is the snapshot used for the course presentation). Nothing in v2 depends on it at runtime.
+This note is self-contained: it describes what WikiRAG v1 was, what it measured, and which of its problems v2 is built to remove. v1 lives in its own repository, which is private (branch `master` is the reference; `branch-di-presentazione` is the snapshot used for the course presentation). Nothing in v2 depends on it at runtime.
 
 ## Timeline
 
@@ -104,7 +104,7 @@ v2 deliberately has **no backwards compatibility** with v1 data (D8): knowledge 
 | v1 asset | In v2 |
 |---|---|
 | `benchmark/` (blind judge, ablation grid) | `wikirag/eval/harness.py` (judge prompt and rubric unchanged) |
-| `benchmarks/arsmagicaV2/dataset.json` (30 gold questions) | `benchmarks/arsmagicaV2/dataset.json` |
+| `benchmarks/arsmagicaV2/dataset.json` (30 gold questions) | same path, kept out of git because it quotes the corpus ([benchmarks/README.md](../benchmarks/README.md)) |
 | `query_classifier.py` (28/30 correct on the gold set) | `wikirag/retrieval/router.py`: decomposition at `R2`; its depth auto-routing function is not wired to the CLI yet |
 | `GeminiPipeline.py` (retries, backoff) | `wikirag/llm/gemini.py` |
 | `pdf_extractor.py` heuristics | `wikirag/extraction/pdf.py` |

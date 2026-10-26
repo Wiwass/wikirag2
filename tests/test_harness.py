@@ -45,6 +45,12 @@ from wikirag.retrieval.assembly import ContextEntry
 
 DATASET_PATH = Path(__file__).resolve().parents[1] / "benchmarks" / "arsmagicaV2" / "dataset.json"
 
+# The gold set and the recorded answers quote the Ars Magica books, so they are
+# not in the repository (benchmarks/README.md); tests that read them need a local copy.
+GOLD_SET = pytest.mark.skipif(
+    not DATASET_PATH.is_file(), reason="needs the local Ars Magica gold set"
+)
+
 DOC_A = "ag0205-ars-magica"
 DOC_B = "ag0280-covenants"
 
@@ -83,7 +89,8 @@ def test_parse_cited_pages_absurd_range_keeps_endpoints_only() -> None:
     assert parse_cited_pages("pages 30-20") == [20, 30]
 
 
-def test_load_dataset_reads_the_committed_gold_set() -> None:
+@GOLD_SET
+def test_load_dataset_reads_the_arsmagica_gold_set() -> None:
     questions = load_dataset(DATASET_PATH)
     assert len(questions) == 30
     assert sum(q.type == "simple" for q in questions) == 15
@@ -701,6 +708,10 @@ BASELINE_DIR = (
     / "runs"
     / "baseline_S0_R1_2026-09-01"
 )
+FROZEN_BASELINE = pytest.mark.skipif(
+    not (BASELINE_DIR / "answers_R1_10k.json").is_file(),
+    reason="needs the local answers of the Checkpoint A baseline",
+)
 
 GRID_QUESTIONS = [
     gold("q1", "botch dice chance", ["AG0205 - Ars Magica"], "page 7"),
@@ -729,16 +740,15 @@ def grid(kb: KnowledgeBase, out_dir: Path, **overrides) -> harness.GridReport:
         depths=("R0", "R1"),
         budgets=(2500, 10_000),
         out_dir=out_dir,
-        dataset_path=DATASET_PATH,
+        dataset_path=tiny_dataset(out_dir.parent),
         corpus="two books",
     )
     options.update(overrides)
     return run_grid(kb, GRID_QUESTIONS, **options)
 
 
-def test_cell_filename_is_deterministic_and_matches_the_baseline() -> None:
+def test_cell_filename_is_deterministic() -> None:
     assert cell_filename("R1", 10_000) == "answers_R1_10k.json"
-    assert (BASELINE_DIR / cell_filename("R1", 10_000)).is_file()
     assert cell_filename(RetrievalDepth.R0, 2500) == "answers_R0_2500.json"
     assert cell_filename("r2", 25_000) == "answers_R2_25k.json"
 
@@ -795,7 +805,7 @@ def test_run_grid_manifest_records_what_produced_the_numbers(
     assert manifest["kb"] == "bench"
     assert manifest["synthesis_level"] == "S0"  # the S axis: the KB's own level
     assert manifest["corpus"] == "two books"
-    assert manifest["dataset_path"] == str(DATASET_PATH)
+    assert manifest["dataset_path"] == str(tmp_path / "dataset.json")
     assert len(manifest["dataset_sha256"]) == 64
     assert manifest["n_questions"] == 2
     assert manifest["git_commit"]
@@ -1041,8 +1051,10 @@ def test_compare_refuses_an_ambiguous_run_directory(tmp_path: Path) -> None:
 # --------------------------------------------------------- the frozen baseline
 
 
+@FROZEN_BASELINE
 def test_frozen_baseline_still_summarizes() -> None:
-    rows = {row["subset"]: row for row in summarize(BASELINE_DIR / "answers_R1_10k.json")}
+    # cell_filename must keep naming cells the way the baseline run did.
+    rows = {row["subset"]: row for row in summarize(BASELINE_DIR / cell_filename("R1", 10_000))}
     overall = rows["overall"]
     assert (overall["n"], overall["judged"]) == (30, 30)
     assert overall["mean_total"] == pytest.approx(20.83, abs=0.005)
@@ -1052,6 +1064,7 @@ def test_frozen_baseline_still_summarizes() -> None:
     assert overall["errors"] == 0 and overall["fallback"] == 0
 
 
+@FROZEN_BASELINE
 def test_compare_against_the_frozen_baseline_is_flat() -> None:
     rows = compare(BASELINE_DIR, BASELINE_DIR / "answers_R1_10k.json")
     assert [row["subset"] for row in rows] == ["simple", "complex", "overall"]
@@ -1059,6 +1072,7 @@ def test_compare_against_the_frozen_baseline_is_flat() -> None:
     assert {row["verdict"] for row in rows} == {"within noise"}
 
 
+@FROZEN_BASELINE
 def test_report_markdown_of_the_frozen_baseline_run() -> None:
     text = report_markdown(BASELINE_DIR)
     assert "baseline_S0_R1_2026-09-01" in text
@@ -1152,6 +1166,8 @@ def test_cli_eval_runs_the_grid_offline(
     from wikirag.cli import main
 
     out = tmp_path / "run"
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(totals_artifact([20, 20], [20, 20])), encoding="utf-8")
     code = main(
         [
             "eval",
@@ -1165,7 +1181,7 @@ def test_cli_eval_runs_the_grid_offline(
             "--out",
             str(out),
             "--compare",
-            str(BASELINE_DIR / "answers_R1_10k.json"),
+            str(baseline),
             "--fake",
         ]
     )
